@@ -63,6 +63,8 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/auth': { target: backendTarget, changeOrigin: true },
         '/settings': { target: backendTarget, changeOrigin: true },
+        '/portfolio': { target: backendTarget, changeOrigin: true },
+        '/orders': { target: backendTarget, changeOrigin: true },
         '/health': { target: backendTarget, changeOrigin: true },
         '/ready': { target: backendTarget, changeOrigin: true },
       },

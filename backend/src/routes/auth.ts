@@ -35,7 +35,15 @@ function setSessionCookie(cookie: any, token: string, expiresAt: Date) {
 }
 
 function clearSessionCookie(cookie: any) {
-  cookie[env.SESSION_COOKIE_NAME].remove();
+  cookie[env.SESSION_COOKIE_NAME].set({
+    value: '',
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: env.NODE_ENV === 'production',
+    path: '/',
+    expires: new Date(0),
+    maxAge: 0,
+  });
 }
 
 function sessionCookieValue(cookie: any): string | undefined {

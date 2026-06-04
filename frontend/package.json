@@ -9,14 +9,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "typescript": "latest",
-    "react": "latest",
-    "react-dom": "latest",
+    "@tanstack/react-query": "latest",
+    "@tanstack/react-router": "^1.170.11",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "@tanstack/react-query": "latest"
+    "@vitejs/plugin-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "typescript": "latest",
+    "vite": "latest"
   },
   "devDependencies": {}
 }

@@ -19,3 +19,20 @@ Implementing the first coding sprint from `docs/implementation-plan.md`:
 
 - The repository was initially docs-only.
 - Live Kite/AI execution features are intentionally not implemented in this first sprint; the docs require safety-critical foundations before automation.
+
+## 2026-06-04 — Phase 2
+
+### Scope completed
+
+Implemented Phase 2 from `docs/implementation-plan.md`: provider interfaces, Kite adapter foundation, broker-state schema, Redis quote cache, BullMQ queues, portfolio/order APIs, and multi-page frontend UI.
+
+### Summary document
+
+Full summary written to:
+
+- `docs/implementation/phase-2-summary.md`
+
+### Validation
+
+- `bun run typecheck`
+- `bun test --cwd backend`

@@ -14,8 +14,10 @@
   },
   "dependencies": {
     "@elysiajs/cors": "latest",
+    "bullmq": "latest",
     "drizzle-orm": "latest",
     "elysia": "latest",
+    "ioredis": "latest",
     "postgres": "latest"
   },
   "devDependencies": {
