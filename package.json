@@ -1,0 +1,21 @@
+{
+  "name": "wolf-trading-copilot",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:backend": "bun run --cwd backend dev",
+    "dev:frontend": "bun run --cwd frontend dev",
+    "db:generate": "bun run --cwd backend db:generate",
+    "db:migrate": "bun run --cwd backend db:migrate",
+    "db:studio": "bun run --cwd backend db:studio",
+    "typecheck": "bun run --cwd backend typecheck && bun run --cwd frontend typecheck"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
