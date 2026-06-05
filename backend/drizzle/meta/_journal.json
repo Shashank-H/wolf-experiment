@@ -15,6 +15,13 @@
       "when": 1780596779017,
       "tag": "0002_skinny_vin_gonzales",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780655966530,
+      "tag": "0002_uneven_wonder_man",
+      "breakpoints": true
     }
   ]
 }

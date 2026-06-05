@@ -1,6 +1,6 @@
 {
-  "id": "02fee20d-9e48-4429-b211-68167ed97eaa",
-  "prevId": "42a39795-f6d1-4d55-ba0e-89046628c7bb",
+  "id": "b432cfdc-5611-403d-8f35-44125935fe0f",
+  "prevId": "02fee20d-9e48-4429-b211-68167ed97eaa",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -244,6 +244,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'{}'::jsonb"
+        },
+        "access_token_expires_at": {
+          "name": "access_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "last_synced_at": {
           "name": "last_synced_at",

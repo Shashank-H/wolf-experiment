@@ -4,6 +4,7 @@ import { env } from '../config/env';
 import { db } from '../db/client';
 import { apiKeys, orderEvents, orders, userSettings } from '../db/schema';
 import { KiteBrokerAdapter } from '../providers/broker/KiteBrokerAdapter';
+import { syncOrders } from '../services/broker-sync';
 import { audit } from '../utils/audit';
 import { decryptSecret } from '../utils/crypto';
 import { getUserForToken } from '../utils/session';
@@ -33,6 +34,22 @@ async function kiteAdapterForUser(userId: string): Promise<KiteBrokerAdapter | n
 }
 
 export const orderRoutes = new Elysia({ prefix: '/orders' })
+  .post('/sync', async ({ cookie, set }) => {
+    const user = await requireUser(cookie, set);
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      const result = await syncOrders(user.id);
+      if (!result.ok) {
+        set.status = 400;
+        return { error: 'Kite login is required before order sync', sync: result };
+      }
+      await audit('orders.sync.manual', { userId: user.id, metadata: result });
+      return { sync: result };
+    } catch (error) {
+      set.status = 400;
+      return { error: error instanceof Error ? `Kite order sync failed: ${error.message}` : 'Kite order sync failed' };
+    }
+  })
   .get('/', async ({ cookie, set }) => {
     const user = await requireUser(cookie, set);
     if (!user) return { error: 'Unauthorized' };

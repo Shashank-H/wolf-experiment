@@ -11,9 +11,10 @@ const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', com
 const portfolioRoute = createRoute({ getParentRoute: () => rootRoute, path: '/portfolio', component: PortfolioPage });
 const ordersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/orders', component: OrdersPage });
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsPage });
+const zerodhaCallbackRoute = createRoute({ getParentRoute: () => rootRoute, path: '/zerodha/callback', component: SettingsPage });
 
 export const router = createRouter({
-  routeTree: rootRoute.addChildren([indexRoute, portfolioRoute, ordersRoute, settingsRoute]),
+  routeTree: rootRoute.addChildren([indexRoute, portfolioRoute, ordersRoute, settingsRoute, zerodhaCallbackRoute]),
 });
 
 declare module '@tanstack/react-router' {

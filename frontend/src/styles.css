@@ -153,6 +153,10 @@ button.tiny { min-height: 32px; padding: 2px 12px; }
 }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.page-actions { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: -16px; }
+.kite-login-panel { display: grid; gap: 12px; padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--hairline); }
+.broker-status-card { border: 1px solid var(--hairline); background: rgba(255,255,255,0.03); padding: 12px; }
+.note.danger { color: #ff8a8a; }
 .compact-form { max-width: 520px; }
 .page-stack { display: grid; gap: 32px; }
 .page-grid { display: grid; gap: 32px; }

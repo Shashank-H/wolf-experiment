@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { BrokerAdapter } from './BrokerAdapter';
 import type {
   BrokerGtt,
@@ -21,8 +22,52 @@ export const DEFAULT_KITE_API_URL = 'https://api.kite.trade';
 
 type KiteCredentials = { apiKey: string; accessToken: string; apiUrl?: string };
 
+export type KiteSession = {
+  accessToken: string;
+  publicToken?: string;
+  refreshToken?: string;
+  userId?: string;
+  userName?: string;
+  email?: string;
+  avatarUrl?: string;
+  raw: Record<string, unknown>;
+};
+
 export class KiteBrokerAdapter implements BrokerAdapter {
   private readonly apiUrl: string;
+
+  static loginUrl(apiKey: string): string {
+    const url = new URL('https://kite.zerodha.com/connect/login');
+    url.searchParams.set('v', '3');
+    url.searchParams.set('api_key', apiKey);
+    return url.toString();
+  }
+
+  static async generateSession(input: { apiKey: string; apiSecret: string; requestToken: string; apiUrl?: string }): Promise<KiteSession> {
+    const apiUrl = normalizeApiUrl(input.apiUrl ?? DEFAULT_KITE_API_URL);
+    const checksum = createHash('sha256').update(`${input.apiKey}${input.requestToken}${input.apiSecret}`).digest('hex');
+    const response = await fetch(`${apiUrl}/session/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formBody({ api_key: input.apiKey, request_token: input.requestToken, checksum }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.status === 'error') {
+      throw new Error(payload.message ?? `Kite session exchange failed: ${response.status}`);
+    }
+    const data = payload.data ?? {};
+    if (!data.access_token) throw new Error('Kite did not return an access token');
+    return {
+      accessToken: String(data.access_token),
+      publicToken: data.public_token ? String(data.public_token) : undefined,
+      refreshToken: data.refresh_token ? String(data.refresh_token) : undefined,
+      userId: data.user_id ? String(data.user_id) : undefined,
+      userName: data.user_name ? String(data.user_name) : undefined,
+      email: data.email ? String(data.email) : undefined,
+      avatarUrl: data.avatar_url ? String(data.avatar_url) : undefined,
+      raw: data,
+    };
+  }
 
   constructor(private readonly credentials: KiteCredentials) {
     this.apiUrl = normalizeApiUrl(credentials.apiUrl ?? DEFAULT_KITE_API_URL);

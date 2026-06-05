@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Card, ErrorNote, Field } from '../components/ui';
 import { api } from '../lib/api';
 import { queryClient } from '../queryClient';
@@ -12,6 +12,16 @@ export function SettingsPage() {
   const [yolo, setYolo] = useState(false);
   const [trading, setTrading] = useState({ maxDailyLoss: '', maxTradesPerDay: '', maxCapitalPerTrade: '', maxOpenPositions: '' });
   const [providers, setProviders] = useState({ kiteApiUrl: '', llmBaseUrl: '', smallModel: '', mediumModel: '', bigModel: '' });
+  const [kiteBusy, setKiteBusy] = useState(false);
+  const callbackHandled = useRef(false);
+
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get('request_token');
+    if (token && !callbackHandled.current) {
+      callbackHandled.current = true;
+      void completeKiteLogin(token);
+    }
+  }, []);
 
   useEffect(() => {
     const preferences = settings.data?.tradingPreferences;
@@ -69,7 +79,57 @@ export function SettingsPage() {
     }
   }
 
+  async function startKiteLogin() {
+    setKiteBusy(true);
+    try {
+      const data = await api<{ loginUrl: string; loginState: string; tokenExpiryNote: string }>('/settings/kite/login-url');
+      sessionStorage.setItem('kite_login_state', data.loginState);
+      setMessage(data.tokenExpiryNote);
+      window.location.href = data.loginUrl;
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not start Kite login');
+      setKiteBusy(false);
+    }
+  }
+
+  async function completeKiteLogin(requestToken: string) {
+    setKiteBusy(true);
+    setMessage('Completing Zerodha login…');
+    try {
+      const loginState = sessionStorage.getItem('kite_login_state') ?? '';
+      const data = await api<{ estimatedExpiresAt: string }>('/settings/kite/session', { method: 'POST', body: JSON.stringify({ requestToken, loginState }) });
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+      sessionStorage.removeItem('kite_login_state');
+      window.history.replaceState({}, document.title, '/settings');
+      setMessage(`Zerodha logged in. Token valid until ${new Date(data.estimatedExpiresAt).toLocaleString()}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not complete Zerodha login');
+    } finally {
+      setKiteBusy(false);
+    }
+  }
+
+  async function syncAll() {
+    setKiteBusy(true);
+    try {
+      await api('/settings/sync', { method: 'POST' });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['settings'] }),
+        queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
+        queryClient.invalidateQueries({ queryKey: ['orders'] }),
+      ]);
+      setMessage('Broker sync complete');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not sync broker data');
+    } finally {
+      setKiteBusy(false);
+    }
+  }
+
   const keyLabels = settings.data?.providerKeys ?? [];
+  const brokerAccount = settings.data?.brokerAccount;
+  const kiteTokenExpired = Boolean(brokerAccount?.accessTokenExpiresAt && new Date(brokerAccount.accessTokenExpiresAt).getTime() <= Date.now());
+  const kiteLoggedIn = Boolean(brokerAccount && brokerAccount.status === 'connected' && !kiteTokenExpired);
   const keySaved = (provider: string, label?: string) => keyLabels.some((key) => key.provider === provider && (!label || key.label === label));
   const savedPlaceholder = (provider: string, label?: string) => keySaved(provider, label) ? 'Saved — enter to replace' : '';
 
@@ -105,10 +165,28 @@ export function SettingsPage() {
             <div className="field-grid">
               <Field label="API key"><input name="kiteApiKey" placeholder={savedPlaceholder('kite', 'api_key')} autoComplete="off" data-lpignore="true" data-1p-ignore="true" /></Field>
               <Field label="API secret"><input name="kiteApiSecret" type="password" placeholder={savedPlaceholder('kite', 'api_secret')} autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" /></Field>
-              <Field label="Access token"><input name="kiteAccessToken" type="password" placeholder={savedPlaceholder('kite', 'access_token')} autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" /></Field>
             </div>
-            <button disabled={settings.isLoading}>Save broker</button>
+            <button disabled={settings.isLoading}>Save credentials</button>
           </form>
+          <div className="kite-login-panel">
+            <p className="note">Set Zerodha redirect URL to /zerodha/callback. Kite does not provide background refresh tokens; re-auth is required after daily expiry.</p>
+            <div className="broker-status-card">
+              {kiteLoggedIn ? (
+                <p className="note">[connected] {brokerAccount?.displayName ?? brokerAccount?.brokerUserId ?? 'Kite account'} · token valid until {brokerAccount?.accessTokenExpiresAt ? new Date(brokerAccount.accessTokenExpiresAt).toLocaleString() : 'daily reset'}</p>
+              ) : kiteTokenExpired ? (
+                <p className="note danger">[expired] Zerodha token expired. Please re-authenticate.</p>
+              ) : keySaved('kite', 'api_key') && keySaved('kite', 'api_secret') ? (
+                <p className="note">[ready] Credentials saved. Authenticate with Zerodha to generate the access token.</p>
+              ) : (
+                <p className="note">[setup] Save your Kite API key and API secret first.</p>
+              )}
+            </div>
+            <div className="row">
+              <button type="button" className="secondary" disabled={kiteBusy || !keySaved('kite', 'api_key') || !keySaved('kite', 'api_secret')} onClick={startKiteLogin}>{kiteTokenExpired ? 'Re-authenticate Zerodha' : kiteLoggedIn ? 'Re-authenticate' : 'Authenticate with Zerodha'}</button>
+              <button type="button" className="secondary" disabled={kiteBusy || !kiteLoggedIn} onClick={syncAll}>Sync now</button>
+            </div>
+            {brokerAccount?.lastSyncedAt && <p className="note">Last synced {new Date(brokerAccount.lastSyncedAt).toLocaleString()}</p>}
+          </div>
         </Card>
 
         <Card title="Market data" marker="[M]">

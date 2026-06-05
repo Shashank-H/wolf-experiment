@@ -18,6 +18,7 @@ const pageTitles: Record<string, string> = {
   '/portfolio': 'Portfolio',
   '/orders': 'Orders',
   '/settings': 'Settings',
+  '/zerodha/callback': 'Zerodha callback',
 };
 
 export function AppShell() {

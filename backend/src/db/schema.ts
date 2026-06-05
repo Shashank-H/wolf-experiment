@@ -71,6 +71,7 @@ export const brokerAccounts = pgTable('broker_accounts', {
   displayName: varchar('display_name', { length: 128 }),
   status: varchar('status', { length: 64 }).notNull().default('configured'),
   metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  accessTokenExpiresAt: timestamp('access_token_expires_at', { withTimezone: true }),
   lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

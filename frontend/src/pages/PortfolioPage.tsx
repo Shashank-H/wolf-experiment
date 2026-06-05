@@ -1,7 +1,8 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Card, EmptyState, ErrorNote, SkeletonRows } from '../components/ui';
 import { api } from '../lib/api';
 import { formatMoney, formatNumber } from '../lib/format';
+import { queryClient } from '../queryClient';
 import type { Holding, Moneyish, Position } from '../types';
 
 function metricTitle(query: { isLoading: boolean; error: unknown }, value: Moneyish) {
@@ -14,9 +15,18 @@ export function PortfolioPage() {
   const pnl = useQuery({ queryKey: ['portfolio', 'pnl'], queryFn: () => api<{ pnl: { holdingsPnl: number; positionsPnl: number; totalPnl: number; holdingsCount: number; positionsCount: number } }>('/portfolio/pnl') });
   const holdings = useQuery({ queryKey: ['portfolio', 'holdings'], queryFn: () => api<{ holdings: Holding[] }>('/portfolio/holdings') });
   const positions = useQuery({ queryKey: ['portfolio', 'positions'], queryFn: () => api<{ positions: Position[] }>('/portfolio/positions') });
+  const sync = useMutation({
+    mutationFn: () => api('/portfolio/sync', { method: 'POST' }),
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['portfolio'] }),
+      queryClient.invalidateQueries({ queryKey: ['settings'] }),
+    ]),
+  });
 
   return (
     <div className="page-stack">
+      <div className="page-actions"><button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate()}>{sync.isPending ? 'Syncing…' : 'Sync portfolio'}</button></div>
+      {sync.error && <ErrorNote error={sync.error} />}
       <div className="metric-grid">
         <Card title="Total PnL"><div className="metric">{metricTitle(pnl, pnl.data?.pnl.totalPnl)}</div></Card>
         <Card title="Holdings"><div className="metric">{pnl.data?.pnl.holdingsCount ?? 0}</div></Card>

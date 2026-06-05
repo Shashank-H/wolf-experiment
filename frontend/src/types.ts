@@ -29,8 +29,20 @@ export type Order = {
   createdAt: string;
 };
 
+export type BrokerAccount = {
+  id: string;
+  broker: string;
+  brokerUserId?: string | null;
+  displayName?: string | null;
+  status: string;
+  metadata?: Record<string, unknown>;
+  accessTokenExpiresAt?: string | null;
+  lastSyncedAt?: string | null;
+};
+
 export type SettingsResponse = {
   settings?: { yoloModeEnabled?: boolean; providerConfig?: Record<string, string | undefined> } | null;
   tradingPreferences?: { maxDailyLoss?: Moneyish; maxTradesPerDay?: Moneyish; maxCapitalPerTrade?: Moneyish; maxOpenPositions?: Moneyish } | null;
   providerKeys?: Array<{ provider: string; label: string; updatedAt?: string }>;
+  brokerAccount?: BrokerAccount | null;
 };

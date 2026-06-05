@@ -11,9 +11,18 @@ export function OrdersPage() {
     mutationFn: (id: string) => api(`/orders/${id}/cancel`, { method: 'POST' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['orders'] }),
   });
+  const sync = useMutation({
+    mutationFn: () => api('/orders/sync', { method: 'POST' }),
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['orders'] }),
+      queryClient.invalidateQueries({ queryKey: ['settings'] }),
+    ]),
+  });
 
   return (
     <Card title="Orders">
+      <div className="page-actions"><button className="secondary" disabled={sync.isPending} onClick={() => sync.mutate()}>{sync.isPending ? 'Syncing…' : 'Sync orders'}</button></div>
+      {sync.error && <ErrorNote error={sync.error} />}
       {orders.error ? <ErrorNote error={orders.error} /> : orders.isLoading ? <SkeletonRows /> : orders.data?.orders.length ? (
         <div className="table-wrap"><table><thead><tr><th>Order</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Filled</th><th>Status</th><th>Action</th></tr></thead><tbody>{orders.data.orders.map((order) => <tr key={order.id}><td>{order.brokerOrderId ?? order.id.slice(0, 8)}</td><td><strong>{order.exchange ?? 'NSE'}:{order.tradingsymbol ?? '-'}</strong></td><td>{order.transactionType ?? '-'}</td><td>{formatNumber(order.quantity)}</td><td>{formatNumber(order.filledQuantity)}</td><td><StatusBadge status={order.status} /></td><td><button className="secondary tiny" disabled={cancel.isPending || !['created', 'risk_validated', 'pending_approval', 'approved', 'submitted', 'open'].includes(order.status)} onClick={() => cancel.mutate(order.id)}>Cancel</button></td></tr>)}</tbody></table></div>
       ) : <EmptyState>No orders yet.</EmptyState>}

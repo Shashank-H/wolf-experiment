@@ -3,6 +3,8 @@ import { Elysia } from 'elysia';
 import { env } from '../config/env';
 import { db } from '../db/client';
 import { holdingsSnapshots, positions } from '../db/schema';
+import { syncPortfolio } from '../services/broker-sync';
+import { audit } from '../utils/audit';
 import { getUserForToken } from '../utils/session';
 
 async function requireUser(cookie: any, set: any) {
@@ -29,6 +31,22 @@ function numberValue(value: unknown): number {
 }
 
 export const portfolioRoutes = new Elysia({ prefix: '/portfolio' })
+  .post('/sync', async ({ cookie, set }) => {
+    const user = await requireUser(cookie, set);
+    if (!user) return { error: 'Unauthorized' };
+    try {
+      const result = await syncPortfolio(user.id);
+      if (!result.ok) {
+        set.status = 400;
+        return { error: 'Kite login is required before portfolio sync', sync: result };
+      }
+      await audit('portfolio.sync.manual', { userId: user.id, metadata: result });
+      return { sync: result };
+    } catch (error) {
+      set.status = 400;
+      return { error: error instanceof Error ? `Kite portfolio sync failed: ${error.message}` : 'Kite portfolio sync failed' };
+    }
+  })
   .get('/holdings', async ({ cookie, set }) => {
     const user = await requireUser(cookie, set);
     if (!user) return { error: 'Unauthorized' };
