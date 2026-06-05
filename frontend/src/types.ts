@@ -41,8 +41,96 @@ export type BrokerAccount = {
 };
 
 export type SettingsResponse = {
-  settings?: { yoloModeEnabled?: boolean; providerConfig?: Record<string, string | undefined> } | null;
+  settings?: { yoloModeEnabled?: boolean; killSwitchEnabled?: boolean; providerConfig?: Record<string, string | number | undefined> } | null;
   tradingPreferences?: { maxDailyLoss?: Moneyish; maxTradesPerDay?: Moneyish; maxCapitalPerTrade?: Moneyish; maxOpenPositions?: Moneyish } | null;
   providerKeys?: Array<{ provider: string; label: string; updatedAt?: string }>;
   brokerAccount?: BrokerAccount | null;
 };
+
+export type ResearchSession = {
+  id: string;
+  tradeDate: string;
+  status: string;
+  marketThesis: string;
+  sectorBias: Array<{ sector: string; bias: string; reason: string }>;
+  riskWarnings: string[];
+  model?: string | null;
+  createdAt: string;
+};
+
+export type ResearchSource = {
+  id: string;
+  provider: string;
+  title: string;
+  url?: string | null;
+  summary: string;
+  symbols: string[];
+  publishedAt?: string | null;
+};
+
+export type WatchlistItem = {
+  id: string;
+  exchange: string;
+  tradingsymbol: string;
+  reason: string;
+  bias: string;
+  source: string;
+  status: string;
+};
+
+export type TradeCandidate = {
+  id: string;
+  exchange: string;
+  tradingsymbol: string;
+  side: string;
+  thesis: string;
+  entryPlan: string;
+  invalidation: string;
+  confidence: number;
+};
+
+export type GttCandidate = {
+  id: string;
+  exchange: string;
+  tradingsymbol: string;
+  transactionType: string;
+  triggerPrice?: Moneyish;
+  limitPrice?: Moneyish;
+  quantity: number;
+  rationale: string;
+  status: string;
+};
+
+export type ResearchBundle = {
+  session: ResearchSession;
+  sources: ResearchSource[];
+  watchlist: WatchlistItem[];
+  tradeCandidates: TradeCandidate[];
+  gttCandidates: GttCandidate[];
+  providerWarnings: string[];
+};
+
+export type ResearchResponse = { research: ResearchBundle | null };
+export type WatchlistResponse = { watchlist: WatchlistItem[] };
+
+export type TriggerRule = {
+  id: string;
+  name: string;
+  status: string;
+  rule: Record<string, unknown>;
+  orderDraft: Record<string, unknown>;
+  expiresAt: string;
+  createdAt: string;
+};
+
+export type ApprovalRequest = {
+  id: string;
+  status: string;
+  requestedAction: string;
+  payload: Record<string, unknown>;
+  rationale: string;
+  createdAt: string;
+};
+
+export type TriggersResponse = { triggers: TriggerRule[] };
+export type ApprovalsResponse = { approvals: ApprovalRequest[] };

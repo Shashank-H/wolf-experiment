@@ -5,6 +5,8 @@ import { env } from '../config/env';
 import { db } from '../db/client';
 import { apiKeys, brokerAccounts, tradingPreferences, userSettings } from '../db/schema';
 import { KiteBrokerAdapter } from '../providers/broker/KiteBrokerAdapter';
+import { DEFAULT_MORNING_RESEARCH_SETTINGS } from '../prompts/morning-research';
+import type { ResearchRiskTolerance } from '../prompts/morning-research';
 import { refreshKiteBrokerAccount, syncOrders, syncPortfolio } from '../services/broker-sync';
 import { audit } from '../utils/audit';
 import { decryptSecret, encryptSecret } from '../utils/crypto';
@@ -37,6 +39,16 @@ function nonNegativeInteger(input: unknown, name: string): number {
   const value = Number(input ?? 0);
   if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
   return value;
+}
+
+function integerInRange(input: unknown, name: string, min: number, max: number): number {
+  const value = Number(input);
+  if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} must be an integer between ${min} and ${max}`);
+  return value;
+}
+
+function riskTolerance(input: unknown): ResearchRiskTolerance {
+  return input === 'moderate' || input === 'aggressive' ? input : 'conservative';
 }
 
 async function getApiSecret(userId: string, provider: string, label: string): Promise<string | null> {
@@ -120,6 +132,31 @@ export const settingsRoutes = new Elysia({ prefix: '/settings' })
     await audit('settings.trading.update', { userId: user.id, metadata: values });
     return { ok: true };
   })
+  .put('/research', async ({ body, cookie, set }) => {
+    const user = await requireUser(cookie, set);
+    if (!user) return { error: 'Unauthorized' };
+    const input = bodyRecord(body);
+    let researchConfig;
+    try {
+      researchConfig = {
+        maxWatchlistItems: integerInRange(input.maxWatchlistItems ?? DEFAULT_MORNING_RESEARCH_SETTINGS.maxWatchlistItems, 'maxWatchlistItems', 0, 24),
+        maxTradeCandidates: integerInRange(input.maxTradeCandidates ?? DEFAULT_MORNING_RESEARCH_SETTINGS.maxTradeCandidates, 'maxTradeCandidates', 0, 12),
+        maxGttCandidates: integerInRange(input.maxGttCandidates ?? DEFAULT_MORNING_RESEARCH_SETTINGS.maxGttCandidates, 'maxGttCandidates', 0, 12),
+        riskTolerance: riskTolerance(input.riskTolerance),
+      };
+    } catch (error) {
+      set.status = 400;
+      return { error: error instanceof Error ? error.message : 'Invalid research settings' };
+    }
+    const [existing] = await db.select().from(userSettings).where(eq(userSettings.userId, user.id)).limit(1);
+    const providerConfig = { ...(existing?.providerConfig ?? {}), ...researchConfig };
+    await db.insert(userSettings).values({ userId: user.id, providerConfig }).onConflictDoUpdate({
+      target: userSettings.userId,
+      set: { providerConfig, updatedAt: new Date() },
+    });
+    await audit('settings.research.update', { userId: user.id, metadata: researchConfig });
+    return { ok: true, researchConfig };
+  })
   .put('/providers', async ({ body, cookie, set }) => {
     const user = await requireUser(cookie, set);
     if (!user) return { error: 'Unauthorized' };
@@ -133,7 +170,9 @@ export const settingsRoutes = new Elysia({ prefix: '/settings' })
 
     let providerConfig;
     try {
+      const [existing] = await db.select().from(userSettings).where(eq(userSettings.userId, user.id)).limit(1);
       providerConfig = {
+        ...(existing?.providerConfig ?? {}),
         kiteApiUrl: optionalUrl(input.kiteApiUrl, 'kiteApiUrl') ?? 'https://api.kite.trade',
         llmBaseUrl: optionalUrl(input.llmBaseUrl, 'llmBaseUrl'),
         smallModel: typeof input.smallModel === 'string' ? input.smallModel : undefined,
@@ -268,4 +307,16 @@ export const settingsRoutes = new Elysia({ prefix: '/settings' })
     });
     await audit(enabled ? 'settings.yolo.enable' : 'settings.yolo.disable', { userId: user.id });
     return { ok: true, yoloModeEnabled: enabled };
+  })
+  .put('/kill-switch', async ({ body, cookie, set }) => {
+    const user = await requireUser(cookie, set);
+    if (!user) return { error: 'Unauthorized' };
+    const input = bodyRecord(body);
+    const enabled = Boolean(input.enabled);
+    await db.insert(userSettings).values({ userId: user.id, killSwitchEnabled: enabled }).onConflictDoUpdate({
+      target: userSettings.userId,
+      set: { killSwitchEnabled: enabled, updatedAt: new Date() },
+    });
+    await audit(enabled ? 'settings.kill_switch.enable' : 'settings.kill_switch.disable', { userId: user.id });
+    return { ok: true, killSwitchEnabled: enabled };
   });

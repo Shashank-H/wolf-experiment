@@ -22,6 +22,20 @@
       "when": 1780655966530,
       "tag": "0002_uneven_wonder_man",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1780657896539,
+      "tag": "0003_foamy_owl",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1780662534010,
+      "tag": "0004_jazzy_sauron",
+      "breakpoints": true
     }
   ]
 }

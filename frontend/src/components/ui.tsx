@@ -9,8 +9,22 @@ export function Card({ title, marker = '[+]', children, className = '' }: React.
   );
 }
 
-export function Field({ label, children }: React.PropsWithChildren<{ label: string }>) {
-  return <label className="field"><span>{label}</span>{children}</label>;
+export function Field({ label, info, children }: React.PropsWithChildren<{ label: string; info?: string }>) {
+  return (
+    <label className="field">
+      <span className="field-label">{label}{info && <InfoIcon text={info} />}</span>
+      {children}
+    </label>
+  );
+}
+
+function InfoIcon({ text }: { text: string }) {
+  return (
+    <span className="info-wrap">
+      <span className="info-icon" tabIndex={0} aria-label={text}>i</span>
+      <span className="info-tooltip" role="tooltip">{text}</span>
+    </span>
+  );
 }
 
 export function EmptyState({ children }: React.PropsWithChildren) {
