@@ -107,15 +107,15 @@ GTT Orders
 Orders
 Positions
 Holdings
-Risk Settings
+Trading Settings
 Agent Runs
 EOD RCA
-Settings
+App Settings
 ```
 
 ### MVP Frontend Responsibilities
 
-* Show morning research summary.
+* Show morning research summary with dense details available in a right-side deep-dive drawer.
 * Show generated watchlist.
 * Show suggested trigger rules.
 * Show pending GTT approvals.
@@ -125,7 +125,8 @@ Settings
 * Display order state.
 * Display risk warnings.
 * Display RCA reports.
-* Configure API keys and preferences.
+* Configure trading/risk preferences separately from app/provider settings.
+* Surface missing provider keys or expired broker auth on the home page with a CTA to app settings.
 
 ---
 
@@ -1219,6 +1220,7 @@ GET  /auth/me
 ```txt
 GET  /settings
 PUT  /settings/trading
+PUT  /settings/research
 PUT  /settings/providers
 PUT  /settings/yolo-mode
 ```

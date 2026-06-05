@@ -116,6 +116,7 @@ GET /ready
 ```txt
 GET  /settings
 PUT  /settings/trading
+PUT  /settings/research
 PUT  /settings/providers
 PUT  /settings/yolo-mode
 ```
@@ -133,19 +134,27 @@ PUT  /settings/yolo-mode
 Minimal utility screens:
 
 - Login/register screen.
-- Settings screen:
+- Trading settings screen:
+  - risk limits
+  - research generation limits
+  - risk tolerance/risk style
+  - YOLO mode toggle with confirmation copy
+  - kill switch
+- App/provider settings screen:
   - Kite credentials
   - Exa key
   - Finnhub key
   - OpenAI-compatible LLM config
-  - trading preferences
-  - YOLO mode toggle with confirmation copy
+- Home page setup CTA:
+  - show missing API keys, broker auth, or expired token issues
+  - link to app/provider settings when action is required
 
 ### Deliverables
 
 - User can register/login.
 - User can store encrypted provider credentials.
 - User can configure risk/trading preferences.
+- User can configure morning research output limits and risk style.
 - YOLO mode changes are audited.
 
 ---
@@ -288,12 +297,10 @@ DELETE /watchlist/:id
 
 - Morning Research screen:
   - run button
-  - market thesis
-  - sector bias
-  - watchlist
-  - trade candidates
-  - GTT suggestions
-  - risk warnings
+  - summary-first market thesis
+  - watchlist preview
+  - trade/GTT/warning counts
+  - right-side deep-dive drawer for sector bias, full watchlist, trade candidates, GTT suggestions, sources, and risk warnings
 
 ### Deliverables
 
@@ -366,9 +373,11 @@ POST /approvals/:id/reject
   - candidate details
   - risk result
   - approve/reject actions
-- Risk Settings screen:
-  - core limits
+- Trading Settings screen:
+  - core limits with defaults
   - kill switch
+  - YOLO mode
+  - research risk style and candidate limits
 
 ### Deliverables
 

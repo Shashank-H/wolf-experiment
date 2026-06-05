@@ -32,6 +32,7 @@ The system is initially designed for a single user but architected for future mu
 ### AI Features
 
 * Morning market research
+* Configurable research output limits and risk tolerance/risk style
 * AI-generated watchlists
 * AI-generated trigger rules
 * AI-generated GTT suggestions
@@ -43,6 +44,7 @@ The system is initially designed for a single user but architected for future mu
 * Max daily loss
 * Max capital per trade
 * Max trades per day
+* Max open positions
 * Max sector exposure
 * Duplicate order prevention
 * Cooldowns
@@ -87,7 +89,9 @@ The system is initially designed for a single user but architected for future mu
 # Core User Flow
 
 ```txt
-User configures APIs
+User configures app/provider APIs when prompted
+    ↓
+User configures trading risk and research settings
     ↓
 Morning research runs
     ↓
