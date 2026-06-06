@@ -2,6 +2,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db/client';
 import { approvalRequests, triggerEvents, triggerRules } from '../db/schema';
 import { audit } from '../utils/audit';
+import { executeApprovedOrderFromApproval } from './execution';
 import { createApprovalFromRisk, evaluateRisk, parseOrderDraft } from './risk';
 
 export type TriggerRuleDsl = {
@@ -88,8 +89,12 @@ export async function pendingApprovals(userId: string) {
 export async function decideApproval(userId: string, id: string, decision: 'approved' | 'rejected', note?: string) {
   const [approval] = await db.update(approvalRequests).set({ status: decision, decisionNote: note, decidedAt: new Date(), updatedAt: new Date() }).where(and(eq(approvalRequests.userId, userId), eq(approvalRequests.id, id), eq(approvalRequests.status, 'pending'))).returning();
   if (!approval) return null;
-  await audit(`approval.${decision}`, { userId, entityType: 'approval_request', entityId: id, metadata: { note } });
-  return approval;
+  let execution: Awaited<ReturnType<typeof executeApprovedOrderFromApproval>> | null = null;
+  if (decision === 'approved' && approval.requestedAction === 'place_order') {
+    execution = await executeApprovedOrderFromApproval(userId, approval.id);
+  }
+  await audit(`approval.${decision}`, { userId, entityType: 'approval_request', entityId: id, metadata: { note, orderId: execution?.order.id } });
+  return { approval, execution };
 }
 
 function validateConditions(value: unknown, label: string): TriggerCondition[] {

@@ -6,7 +6,7 @@ import { KiteBrokerAdapter } from '../providers/broker/KiteBrokerAdapter';
 import type { InstrumentRef } from '../providers/broker/types';
 import { decryptSecret } from '../utils/crypto';
 
-async function kiteAdapterForUser(userId: string): Promise<KiteBrokerAdapter | null> {
+export async function kiteAdapterForUser(userId: string): Promise<KiteBrokerAdapter | null> {
   const [keys, settingsRows, accountRows] = await Promise.all([
     db.select().from(apiKeys).where(eq(apiKeys.userId, userId)),
     db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1),
@@ -21,7 +21,7 @@ async function kiteAdapterForUser(userId: string): Promise<KiteBrokerAdapter | n
   return new KiteBrokerAdapter({ apiKey: decryptSecret(apiKey), accessToken: decryptSecret(accessToken), apiUrl });
 }
 
-async function upsertKiteBrokerAccount(userId: string, adapter: KiteBrokerAdapter) {
+export async function upsertKiteBrokerAccount(userId: string, adapter: KiteBrokerAdapter) {
   const profile = await adapter.getProfile().catch(() => null);
   const [account] = await db.insert(brokerAccounts).values({
     userId,
@@ -127,5 +127,7 @@ export async function pollMarket(userId: string, symbols: InstrumentRef[]) {
   if (quotes.length) {
     await db.insert(marketSnapshots).values(quotes.map((quote) => ({ userId, exchange: quote.exchange, tradingsymbol: quote.tradingsymbol, lastPrice: String(quote.lastPrice), changePercent: String(quote.changePercent ?? 0), volume: quote.volume ?? 0, raw: quote.raw as Record<string, unknown> })));
   }
-  return { ok: true, quotes: quotes.length };
+  const { evaluateMarketTriggers } = await import('./trigger-evaluation');
+  const triggerEvaluation = quotes.length ? await evaluateMarketTriggers(userId, quotes) : { evaluated: 0, matched: 0 };
+  return { ok: true, quotes: quotes.length, triggerEvaluation };
 }

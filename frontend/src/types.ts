@@ -101,6 +101,31 @@ export type GttCandidate = {
   status: string;
 };
 
+export type GttOrder = {
+  id: string;
+  brokerGttId?: string | null;
+  exchange: string;
+  tradingsymbol: string;
+  transactionType: string;
+  triggerPrice: Moneyish;
+  limitPrice: Moneyish;
+  quantity: number;
+  status: string;
+  statusMessage?: string | null;
+  placedAt?: string | null;
+  cancelledAt?: string | null;
+};
+
+export type BrokerGtt = {
+  gttId: string;
+  status?: string;
+  tradingsymbol?: string;
+  exchange?: string;
+  createdAt?: string;
+};
+
+export type GttResponse = { candidates: GttCandidate[]; gttOrders: GttOrder[]; brokerGtts: BrokerGtt[] };
+
 export type ResearchBundle = {
   session: ResearchSession;
   sources: ResearchSource[];
@@ -166,3 +191,60 @@ export type DryRunBundle = {
 
 export type DryRunResponse = { dryRun: DryRunBundle | null };
 export type DryRunHistoryResponse = { dryRuns: DryRunBundle[] };
+
+export type TriggerEvent = {
+  id: string;
+  triggerRuleId?: string | null;
+  eventType: string;
+  matched: boolean;
+  marketContext: Record<string, unknown>;
+  message?: string | null;
+  createdAt: string;
+};
+
+export type OrderEvent = {
+  id: string;
+  orderId?: string | null;
+  eventType: string;
+  brokerStatus?: string | null;
+  message?: string | null;
+  createdAt: string;
+};
+
+export type DaySummary = {
+  researchRuns: number;
+  tradeCandidates: number;
+  gttCandidates: number;
+  activeGtts: number;
+  triggers: number;
+  approvals: number;
+  pendingApprovals: number;
+  orders: number;
+  placedOrders: number;
+  rcaReports: number;
+  pnl: number;
+  headline: string;
+};
+
+export type DayBundle = {
+  tradeDate: string;
+  summary: DaySummary;
+  researchSessions: ResearchSession[];
+  primarySession: ResearchSession | null;
+  dryRunSession: ResearchSession | null;
+  sources: ResearchSource[];
+  watchlist: WatchlistItem[];
+  tradeCandidates: TradeCandidate[];
+  gttCandidates: GttCandidate[];
+  gttOrders: GttOrder[];
+  triggers: TriggerRule[];
+  triggerEvents: TriggerEvent[];
+  approvals: ApprovalRequest[];
+  orders: Order[];
+  orderEvents: OrderEvent[];
+  rcaReports: Array<{ id: string; dailySummary: string; strategyReview?: string; agentReasoningReview?: string; riskReview?: string; totalPnl: Moneyish; raw: Record<string, unknown> }>;
+};
+
+export type DayResponse = { day: DayBundle };
+export type HistoryDay = { tradeDate: string; summary: DaySummary; primarySessionId?: string | null; dryRunSessionId?: string | null; latestCreatedAt?: string | null };
+export type HistoryResponse = { days: HistoryDay[] };

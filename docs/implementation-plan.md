@@ -796,3 +796,30 @@ If starting implementation now, begin with Phase 0 + the first half of Phase 1:
 8. Add `.env.example`.
 
 This gives a safe foundation before integrating Kite or automated trading workflows.
+
+
+## Product Navigation Update — Today + History Cockpit
+
+Decision: the primary day-to-day workflow should move to a `/today` cockpit. This page is the most-used operational surface and groups everything required for same-day execution into tabs:
+
+- Research: morning thesis, watchlist, candidates, sources, warnings, raw/parsed run output.
+- GTT: generated GTT candidates and app-placed broker GTTs.
+- Triggers: active rules and trigger events created/evaluated today.
+- Approvals: pending/approved/rejected approval requests for the day.
+- Orders: live/dry-run orders and order events for the day.
+- Dry-run / RCA: simulated PnL, EOD RCA reports, and learnings.
+
+History should be a separate archive at `/history`. It lists old trading days/runs with compact summaries and metrics. Opening `/history/:date` should replay the same cockpit UI as `/today`, but read-only and scoped to the selected trading date. This gives one mental model for current execution and post-trade review.
+
+Implementation notes:
+
+- Short term: derive daily bundles by `trade_date` and same-day `created_at` ranges.
+- Long term: introduce an explicit `daily_sessions` / `trading_days` table and link research sessions, GTTs, triggers, approvals, orders, dry-run output, RCA, and broker sync events via `daily_session_id`.
+- Keep existing specialist pages (`/research`, `/gtt`, `/triggers`, `/approvals`, `/orders`) as power-user/detail pages while `/today` becomes the default operational page.
+
+- Navigation refinement: `/today` now owns the operational surfaces that used to be top-level tabs: research, GTT, triggers, approvals, and orders. The sidebar is simplified to durable app areas only.
+- `/today` and `/history/:date` now start with a Summary tab, followed by underline-style tabs for Research, GTT, Triggers, Approvals, Orders, and Dry-run/RCA. The former top hero/metrics block lives inside Summary.
+
+- Refined Today navigation again per product direction: everything operational now lives under `/today/*` sub-pages (`/today/research`, `/today/gtt`, `/today/triggers`, `/today/approvals`, `/today/orders`) instead of only local in-page tabs.
+- Preserved the original functional pages/actions inside the new Today sub-pages, so running morning research, adding watchlist items, approving/rejecting/cancelling GTTs, trigger actions, approvals, and order views remain available.
+- Removed the global session/email subheading from the page header and upgraded the header to a more modern application-style title treatment.

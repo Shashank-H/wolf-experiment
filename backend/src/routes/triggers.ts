@@ -68,21 +68,26 @@ export const triggerRoutes = new Elysia()
       const user = await requireUser(cookie, set);
       if (!user) return { error: 'Unauthorized' };
       const input = bodyRecord(body);
-      const approval = await decideApproval(user.id, params.id, 'approved', typeof input.note === 'string' ? input.note : undefined);
-      if (!approval) {
-        set.status = 404;
-        return { error: 'Pending approval not found' };
+      try {
+        const result = await decideApproval(user.id, params.id, 'approved', typeof input.note === 'string' ? input.note : undefined);
+        if (!result) {
+          set.status = 404;
+          return { error: 'Pending approval not found' };
+        }
+        return result;
+      } catch (error) {
+        set.status = 400;
+        return { error: error instanceof Error ? error.message : 'Could not execute approved action' };
       }
-      return { approval };
     })
     .post('/:id/reject', async ({ body, cookie, params, set }) => {
       const user = await requireUser(cookie, set);
       if (!user) return { error: 'Unauthorized' };
       const input = bodyRecord(body);
-      const approval = await decideApproval(user.id, params.id, 'rejected', typeof input.note === 'string' ? input.note : undefined);
-      if (!approval) {
+      const result = await decideApproval(user.id, params.id, 'rejected', typeof input.note === 'string' ? input.note : undefined);
+      if (!result) {
         set.status = 404;
         return { error: 'Pending approval not found' };
       }
-      return { approval };
+      return result;
     }));

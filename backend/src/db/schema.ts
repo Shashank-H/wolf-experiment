@@ -121,6 +121,7 @@ export const orders = pgTable('orders', {
   userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   brokerAccountId: uuid('broker_account_id').references(() => brokerAccounts.id, { onDelete: 'set null' }),
   brokerOrderId: varchar('broker_order_id', { length: 128 }),
+  idempotencyKey: varchar('idempotency_key', { length: 192 }),
   exchange: varchar('exchange', { length: 32 }),
   tradingsymbol: varchar('tradingsymbol', { length: 128 }),
   transactionType: varchar('transaction_type', { length: 16 }),
@@ -144,6 +145,7 @@ export const orders = pgTable('orders', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('orders_user_broker_order_unique').on(table.userId, table.brokerOrderId),
+  uniqueIndex('orders_user_idempotency_key_unique').on(table.userId, table.idempotencyKey),
 ]);
 
 export const orderEvents = pgTable('order_events', {
@@ -253,6 +255,31 @@ export const gttCandidates = pgTable('gtt_candidates', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const gttOrders = pgTable('gtt_orders', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  brokerAccountId: uuid('broker_account_id').references(() => brokerAccounts.id, { onDelete: 'set null' }),
+  gttCandidateId: uuid('gtt_candidate_id').references(() => gttCandidates.id, { onDelete: 'set null' }),
+  brokerGttId: varchar('broker_gtt_id', { length: 128 }),
+  idempotencyKey: varchar('idempotency_key', { length: 192 }).notNull(),
+  exchange: varchar('exchange', { length: 32 }).notNull().default('NSE'),
+  tradingsymbol: varchar('tradingsymbol', { length: 128 }).notNull(),
+  transactionType: varchar('transaction_type', { length: 16 }).notNull().default('BUY'),
+  triggerPrice: numeric('trigger_price', { precision: 18, scale: 4 }).notNull().default('0'),
+  limitPrice: numeric('limit_price', { precision: 18, scale: 4 }).notNull().default('0'),
+  quantity: integer('quantity').notNull().default(1),
+  status: varchar('status', { length: 64 }).notNull().default('created'),
+  statusMessage: text('status_message'),
+  raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+  placedAt: timestamp('placed_at', { withTimezone: true }),
+  cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('gtt_orders_user_broker_gtt_unique').on(table.userId, table.brokerGttId),
+  uniqueIndex('gtt_orders_user_idempotency_key_unique').on(table.userId, table.idempotencyKey),
+]);
 
 export const triggerRules = pgTable('trigger_rules', {
   id: uuid('id').primaryKey().defaultRandom(),

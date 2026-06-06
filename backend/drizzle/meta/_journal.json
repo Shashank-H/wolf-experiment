@@ -43,6 +43,13 @@
       "when": 1780668000000,
       "tag": "0005_dry_run_mode",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780739735268,
+      "tag": "0006_elite_lifeguard",
+      "breakpoints": true
     }
   ]
 }

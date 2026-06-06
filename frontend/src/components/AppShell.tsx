@@ -8,20 +8,35 @@ import { AuthPanel } from './AuthPanel';
 
 const navItems = [
   { to: '/', label: 'Home' },
+  { to: '/today', label: 'Today' },
+  { to: '/history', label: 'History' },
   { to: '/portfolio', label: 'Portfolio' },
-  { to: '/orders', label: 'Orders' },
-  { to: '/research', label: 'Research' },
-  { to: '/triggers', label: 'Triggers' },
-  { to: '/approvals', label: 'Approvals' },
   { to: '/trading-settings', label: 'Trading settings' },
+] as const;
+
+const todaySectionItems = [
+  { to: '/today', label: 'Summary' },
+  { to: '/today/research', label: 'Research' },
+  { to: '/today/gtt', label: 'GTT' },
+  { to: '/today/triggers', label: 'Triggers' },
+  { to: '/today/approvals', label: 'Approvals' },
+  { to: '/today/orders', label: 'Orders' },
 ] as const;
 
 const pageTitles: Record<string, string> = {
   '/': 'Command center',
+  '/today': 'Today',
+  '/today/research': 'Research',
+  '/today/gtt': 'GTT',
+  '/today/triggers': 'Triggers',
+  '/today/approvals': 'Approvals',
+  '/today/orders': 'Orders',
+  '/history': 'History',
   '/portfolio': 'Portfolio',
   '/orders': 'Orders',
   '/research': 'Morning research',
   '/triggers': 'Trigger rules',
+  '/gtt': 'GTT orders',
   '/approvals': 'Approvals',
   '/trading-settings': 'Trading settings',
   '/settings': 'App settings',
@@ -33,7 +48,7 @@ export function AppShell() {
   const router = useRouter();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const me = useQuery({ queryKey: ['me'], queryFn: () => api<MeResponse>('/auth/me'), retry: false });
-  const pageTitle = useMemo(() => pageTitles[pathname] ?? 'Wolf', [pathname]);
+  const pageTitle = useMemo(() => pageTitles[pathname] ?? (pathname.startsWith('/history/') ? 'History replay' : 'Wolf'), [pathname]);
   const isLoggedOut = !me.isLoading && (me.isError || !me.data?.user);
 
   useEffect(() => {
@@ -79,10 +94,14 @@ export function AppShell() {
         </div>
       </aside>
       <section className="app-content">
-        <header className="page-head">
-          <div><h1>{pageTitle}</h1><p>Session: {me.data?.user?.email}</p></div>
-          <div className="status-line">[{theme}] [{pathname === '/' ? 'home' : pathname.slice(1)}]</div>
+        <header className="page-head app-page-head">
+          <h1>{pageTitle}</h1>
         </header>
+        {pathname.startsWith('/today') && (
+          <nav className="today-route-tabs" aria-label="Today sections">
+            {todaySectionItems.map((item) => <Link key={item.to} to={item.to} className={pathname === item.to ? 'active' : ''}>{item.label}</Link>)}
+          </nav>
+        )}
         <Outlet />
       </section>
     </main>

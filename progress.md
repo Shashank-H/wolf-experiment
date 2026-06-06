@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-Phase 5A global dry-run + RCA loop implemented
+Phase 5A complete; Phase 5B live GTT/order execution core implemented
 
 ## Tasks
 - Added Phase 3 research persistence, providers, morning research APIs/UI, and fallback planner.
@@ -25,6 +25,13 @@ Phase 5A global dry-run + RCA loop implemented
 - Added dry-run EOD flow: marks simulated orders to latest market snapshots, computes hypothetical PnL, closes them, and stores RCA reports/findings.
 - Fed recent RCA learnings into the morning research prompt context.
 - Removed separate Research-page dry-run controls; dry-run is a global Trading Settings mode, not a per-page workflow.
+
+- Added Phase 5B live execution core with `gtt_orders`, order idempotency keys, broker response/event logging, and migration `0006_elite_lifeguard.sql`.
+- Added `/gtt` APIs for candidates, active app GTTs, broker GTT status, approve/reject/cancel.
+- GTT approval now places live Kite GTTs when dry-run mode and kill switch are off; dry-run globally blocks broker placement.
+- Manual approval of `place_order` requests now submits live Kite orders through the execution engine with idempotency and order events.
+- Wired market polling to evaluate active trigger rules; matched triggers now create approvals or YOLO-approved executions after deterministic risk checks.
+- Added frontend GTT Orders screen and sidebar route with candidate approval/rejection, active GTT cancellation, and broker status.
 
 ## Files Changed
 - backend/src/db/schema.ts
@@ -71,3 +78,15 @@ Phase 5A global dry-run + RCA loop implemented
 - Dry-run PnL depends on available `market_snapshots`; if no quote exists for a symbol it remains tracked at entry/zero until market polling supplies prices.
 - `DRY_RUN_SCHEDULER_ENABLED=true` enables automated morning/EOD tracking and RCA jobs for users with global dry-run mode enabled.
 - Live broker GTT/order placement is intentionally deferred to Phase 5B.
+
+- Added product decision to docs: `/today` is the primary execution cockpit with tabs for research, GTT, triggers, approvals, orders, and dry-run/RCA.
+- Added `/history` archive and `/history/:date` read-only replay pattern to docs and MVP plan.
+- Built backend daily bundle APIs: `GET /today`, `GET /history`, `GET /history/:date`.
+- Built frontend Today cockpit and History replay pages using the same tabbed UI model.
+
+- Navigation refinement: `/today` now owns the operational surfaces that used to be top-level tabs: research, GTT, triggers, approvals, and orders. The sidebar is simplified to durable app areas only.
+- `/today` and `/history/:date` now start with a Summary tab, followed by underline-style tabs for Research, GTT, Triggers, Approvals, Orders, and Dry-run/RCA. The former top hero/metrics block lives inside Summary.
+
+- Refined Today navigation again per product direction: everything operational now lives under `/today/*` sub-pages (`/today/research`, `/today/gtt`, `/today/triggers`, `/today/approvals`, `/today/orders`) instead of only local in-page tabs.
+- Preserved the original functional pages/actions inside the new Today sub-pages, so running morning research, adding watchlist items, approving/rejecting/cancelling GTTs, trigger actions, approvals, and order views remain available.
+- Removed the global session/email subheading from the page header and upgraded the header to a more modern application-style title treatment.

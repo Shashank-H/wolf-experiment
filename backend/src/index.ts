@@ -2,6 +2,8 @@ import cors from '@elysiajs/cors';
 import { Elysia } from 'elysia';
 import { env } from './config/env';
 import { authRoutes } from './routes/auth';
+import { dailyRoutes } from './routes/daily';
+import { gttRoutes } from './routes/gtt';
 import { healthRoutes } from './routes/health';
 import { orderRoutes } from './routes/orders';
 import { portfolioRoutes } from './routes/portfolio';
@@ -19,7 +21,9 @@ export const app = new Elysia()
   .use(authRoutes)
   .use(settingsRoutes)
   .use(portfolioRoutes)
+  .use(dailyRoutes)
   .use(orderRoutes)
+  .use(gttRoutes)
   .use(researchRoutes)
   .use(triggerRoutes)
   .onError(({ code, error, set }) => {
