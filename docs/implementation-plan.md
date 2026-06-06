@@ -388,11 +388,67 @@ POST /approvals/:id/reject
 
 ---
 
-## Phase 5 — GTT and Order Execution
+## Phase 5A — Dry-Run Trading and Reinforcement Loop
 
 ### Goals
 
-Place Kite GTTs/orders safely in manual and YOLO modes.
+Add a global dry-run safety mode. When enabled, the normal MVP flow still runs, but broker placement is blocked globally: research, GTT approvals, tracking, EOD RCA, and learning continue as if live mode were active, while no money changes hands.
+
+### Backend Tasks
+
+- Add setting: `dry_run_mode_enabled`.
+- Use the same production tables with dry-run flags instead of separate dry-run tables:
+  - `daily_research_sessions.is_dry_run`
+  - `orders.is_dry_run`
+  - `gtt_candidates.status = dry_run_approved`
+- Add MVP RCA schemas:
+  - `rca_reports`
+  - `rca_findings`
+- Implement global dry-run behavior:
+  - normal morning research honors the global dry-run setting
+  - generated GTT candidates are marked `dry_run_approved`
+  - simulated tracked orders are created from GTT candidates
+  - fall back to trade candidates when the model avoids GTT price levels
+  - all broker order/GTT placement APIs are blocked while dry-run mode is enabled
+- Implement dry-run EOD flow:
+  - mark tracked symbols to latest market snapshots
+  - compute hypothetical PnL as if live mode had been enabled
+  - close dry-run trades/session
+  - persist EOD RCA reports/findings
+- Feed recent RCA learnings into the morning research prompt context.
+- Add optional scheduler controlled by env:
+  - `DRY_RUN_SCHEDULER_ENABLED`
+  - `DRY_RUN_MORNING_TIME_IST`
+  - `DRY_RUN_EOD_TIME_IST`
+- Add APIs:
+
+```txt
+GET  /dry-run/today
+GET  /dry-run/history
+POST /dry-run/complete-eod
+PUT  /settings/dry-run-mode
+```
+
+### Frontend Tasks
+
+- Trading Settings dry-run toggle.
+- Trading Settings global dry-run toggle only.
+- Research page uses the same normal morning research action; dry-run is not a separate per-page workflow.
+
+### Deliverables
+
+- Global dry-run mode prevents broker placement across the system.
+- Normal morning research creates tracked simulated orders when dry-run mode is enabled.
+- EOD hypothetical PnL is persisted.
+- Dry-run outcomes feed future morning research via EOD RCA learnings.
+
+---
+
+## Phase 5B — Live GTT and Order Execution
+
+### Goals
+
+Place Kite GTTs/orders safely in manual and YOLO modes after dry-run validation.
 
 ### Backend Tasks
 

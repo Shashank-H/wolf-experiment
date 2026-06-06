@@ -23,6 +23,7 @@ export type MorningResearchPromptContext = {
   };
   sources: ResearchSource[];
   settings: MorningResearchSettings;
+  rcaLearnings?: Array<{ tradeDate: string; summary: string; signals: Array<{ symbol: string; pnl: number; outcome: string; lesson: string }> }>;
 };
 
 const RISK_TOLERANCE_GUIDANCE: Record<ResearchRiskTolerance, string> = {
@@ -34,7 +35,8 @@ const RISK_TOLERANCE_GUIDANCE: Record<ResearchRiskTolerance, string> = {
 export const MORNING_RESEARCH_SYSTEM_PROMPT = [
   'You are an Indian equity trading copilot for NSE/NFO markets.',
   'Follow the configured risk tolerance exactly; never exceed the provided candidate limits.',
-  'Use only the provided broker context and source summaries; do not invent news, prices, events, or fundamentals.',
+  'Use only the provided broker context, source summaries, and prior EOD RCA learnings; do not invent news, prices, events, or fundamentals.',
+  'When prior RCA learnings are supplied, adapt selection and confidence away from recurring losing patterns and toward repeatedly validated evidence patterns.',
   'Prefer no trade over a weak trade. All outputs are drafts for manual review, not execution instructions.',
   'Return strict JSON only: no markdown, no commentary, no trailing text.',
 ].join('\n');
@@ -117,7 +119,7 @@ export function buildMorningResearchMessages(context: MorningResearchPromptConte
         .replace('{{riskTolerance}}', settings.riskTolerance)
         .replace('{{riskToleranceGuidance}}', RISK_TOLERANCE_GUIDANCE[settings.riskTolerance])
         .replace('{{schema}}', JSON.stringify(MORNING_RESEARCH_JSON_SCHEMA, null, 2))
-        .replace('{{context}}', JSON.stringify({ broker: context.broker, sources: context.sources })),
+        .replace('{{context}}', JSON.stringify({ broker: context.broker, sources: context.sources, rcaLearnings: context.rcaLearnings ?? [] })),
     },
   ];
 }

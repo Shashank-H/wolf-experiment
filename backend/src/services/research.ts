@@ -1,6 +1,6 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { apiKeys, dailyResearchSessions, gttCandidates, holdingsSnapshots, positions, researchSources, tradeCandidates, userSettings, watchlistItems } from '../db/schema';
+import { apiKeys, dailyResearchSessions, gttCandidates, holdingsSnapshots, positions, rcaReports, researchSources, tradeCandidates, userSettings, watchlistItems } from '../db/schema';
 import { ExaProvider } from '../providers/research/ExaProvider';
 import { FinnhubProvider } from '../providers/research/FinnhubProvider';
 import { OpenAiCompatibleProvider } from '../providers/research/OpenAiCompatibleProvider';
@@ -26,12 +26,14 @@ type BrokerContext = {
 
 const DEFAULT_SYMBOLS = ['NIFTY 50', 'BANKNIFTY', 'RELIANCE', 'HDFCBANK', 'INFY'];
 
-export async function runMorningResearch(userId: string): Promise<MorningResearchResult> {
+export async function runMorningResearch(userId: string, options: { dryRun?: boolean } = {}): Promise<MorningResearchResult> {
   const tradeDate = indianTradeDate();
-  const [context, settings, secrets] = await Promise.all([
+  const isDryRun = Boolean(options.dryRun);
+  const [context, settings, secrets, rcaLearnings] = await Promise.all([
     loadBrokerContext(userId),
     db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1),
     loadSecrets(userId),
+    loadRcaLearnings(userId),
   ]);
   const providerConfig = settings[0]?.providerConfig ?? {};
   const researchSettings = parseResearchSettings(providerConfig);
@@ -39,7 +41,7 @@ export async function runMorningResearch(userId: string): Promise<MorningResearc
   const symbols = [...new Set([...context.holdings.map((row) => row.tradingsymbol), ...context.positions.map((row) => row.tradingsymbol), ...DEFAULT_SYMBOLS])].slice(0, 16);
   const sources = await collectSources(symbols, secrets, providerWarnings);
   const model = typeof providerConfig.mediumModel === 'string' && providerConfig.mediumModel.trim() ? providerConfig.mediumModel.trim() : 'gpt-4o-mini';
-  const plan = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings });
+  const plan = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, rcaLearnings });
 
   const [session] = await db.insert(dailyResearchSessions).values({
     userId,
@@ -50,8 +52,11 @@ export async function runMorningResearch(userId: string): Promise<MorningResearc
     riskWarnings: [...plan.riskWarnings, ...providerWarnings],
     model: secrets.llmApiKey ? model : 'deterministic-fallback',
     rawPlan: plan as unknown as Record<string, unknown>,
+    isDryRun,
+    dryRunStatus: isDryRun ? 'active' : null,
+    dryRunSummary: isDryRun ? 'Dry run research completed; simulated GTTs approved for tracking. No broker orders were placed.' : '',
   }).onConflictDoUpdate({
-    target: [dailyResearchSessions.userId, dailyResearchSessions.tradeDate],
+    target: [dailyResearchSessions.userId, dailyResearchSessions.tradeDate, dailyResearchSessions.isDryRun],
     set: {
       status: 'completed',
       marketThesis: plan.marketThesis,
@@ -59,6 +64,11 @@ export async function runMorningResearch(userId: string): Promise<MorningResearc
       riskWarnings: [...plan.riskWarnings, ...providerWarnings],
       model: secrets.llmApiKey ? model : 'deterministic-fallback',
       rawPlan: plan as unknown as Record<string, unknown>,
+      isDryRun,
+      dryRunStatus: isDryRun ? 'active' : null,
+      dryRunSummary: isDryRun ? 'Dry run research completed; simulated GTTs approved for tracking. No broker orders were placed.' : '',
+      dryRunCompletedAt: null,
+      dryRunTotalPnl: '0',
       updatedAt: new Date(),
     },
   }).returning();
@@ -134,7 +144,9 @@ export async function runMorningResearch(userId: string): Promise<MorningResearc
 }
 
 export async function getTodayResearch(userId: string): Promise<MorningResearchResult | null> {
-  const [session] = await db.select().from(dailyResearchSessions).where(and(eq(dailyResearchSessions.userId, userId), eq(dailyResearchSessions.tradeDate, indianTradeDate()))).limit(1);
+  const [settings] = await db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1);
+  const isDryRun = Boolean(settings?.dryRunModeEnabled);
+  const [session] = await db.select().from(dailyResearchSessions).where(and(eq(dailyResearchSessions.userId, userId), eq(dailyResearchSessions.tradeDate, indianTradeDate()), eq(dailyResearchSessions.isDryRun, isDryRun))).limit(1);
   return session ? hydrateSession(userId, session) : null;
 }
 
@@ -192,6 +204,15 @@ async function loadBrokerContext(userId: string): Promise<BrokerContext> {
   };
 }
 
+async function loadRcaLearnings(userId: string) {
+  const rows = await db.select().from(rcaReports).where(eq(rcaReports.userId, userId)).orderBy(desc(rcaReports.createdAt)).limit(5);
+  return rows.map((row) => ({
+    tradeDate: row.tradeDate,
+    summary: row.dailySummary,
+    signals: (row.raw.signals as Array<{ symbol: string; pnl: number; outcome: string; lesson: string }> | undefined) ?? [],
+  })).reverse();
+}
+
 async function loadSecrets(userId: string) {
   const rows = await db.select().from(apiKeys).where(eq(apiKeys.userId, userId));
   const secret = (provider: string, label: string) => {
@@ -215,7 +236,7 @@ async function collectSources(symbols: string[], secrets: Awaited<ReturnType<typ
   }).slice(0, 24);
 }
 
-async function buildPlan(input: { context: BrokerContext; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings }): Promise<MorningResearchPlan> {
+async function buildPlan(input: { context: BrokerContext; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings; rcaLearnings: Awaited<ReturnType<typeof loadRcaLearnings>> }): Promise<MorningResearchPlan> {
   if (!input.llmApiKey) {
     input.providerWarnings.push('LLM API key missing; generated deterministic fallback plan.');
     return fallbackPlan(input.context, input.sources, input.researchSettings);
@@ -225,7 +246,7 @@ async function buildPlan(input: { context: BrokerContext; sources: ResearchSourc
     const json = await llm.generateJson({
       model: input.model,
       temperature: 0.15,
-      messages: buildMorningResearchMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings }),
+      messages: buildMorningResearchMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings }),
     });
     return normalizePlan(json, input.context, input.sources, input.researchSettings);
   } catch (error) {
@@ -260,7 +281,7 @@ function normalizePlan(raw: Record<string, unknown>, context: BrokerContext, sou
   };
 }
 
-function indianTradeDate(date = new Date()): string {
+export function indianTradeDate(date = new Date()): string {
   const ist = new Date(date.getTime() + 5.5 * 60 * 60 * 1000);
   return ist.toISOString().slice(0, 10);
 }

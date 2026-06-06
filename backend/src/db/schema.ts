@@ -36,6 +36,7 @@ export const userSettings = pgTable('user_settings', {
   userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   yoloModeEnabled: boolean('yolo_mode_enabled').notNull().default(false),
   killSwitchEnabled: boolean('kill_switch_enabled').notNull().default(false),
+  dryRunModeEnabled: boolean('dry_run_mode_enabled').notNull().default(false),
   triggerResearchPolicy: varchar('trigger_research_policy', { length: 64 }).notNull().default('only_high_risk'),
   providerConfig: jsonb('provider_config').$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -131,6 +132,13 @@ export const orders = pgTable('orders', {
   status: varchar('status', { length: 64 }).notNull().default('created'),
   statusMessage: text('status_message'),
   raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+  isDryRun: boolean('is_dry_run').notNull().default(false),
+  researchSessionId: uuid('research_session_id').references(() => dailyResearchSessions.id, { onDelete: 'set null' }),
+  gttCandidateId: uuid('gtt_candidate_id').references(() => gttCandidates.id, { onDelete: 'set null' }),
+  tradeCandidateId: uuid('trade_candidate_id').references(() => tradeCandidates.id, { onDelete: 'set null' }),
+  currentPrice: numeric('current_price', { precision: 18, scale: 4 }).notNull().default('0'),
+  exitPrice: numeric('exit_price', { precision: 18, scale: 4 }),
+  pnl: numeric('pnl', { precision: 18, scale: 4 }).notNull().default('0'),
   placedAt: timestamp('placed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -172,10 +180,15 @@ export const dailyResearchSessions = pgTable('daily_research_sessions', {
   riskWarnings: jsonb('risk_warnings').$type<string[]>().notNull().default([]),
   model: varchar('model', { length: 128 }),
   rawPlan: jsonb('raw_plan').$type<Record<string, unknown>>().notNull().default({}),
+  isDryRun: boolean('is_dry_run').notNull().default(false),
+  dryRunStatus: varchar('dry_run_status', { length: 64 }),
+  dryRunTotalPnl: numeric('dry_run_total_pnl', { precision: 18, scale: 4 }).notNull().default('0'),
+  dryRunSummary: text('dry_run_summary').notNull().default(''),
+  dryRunCompletedAt: timestamp('dry_run_completed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
-  uniqueIndex('daily_research_sessions_user_trade_date_unique').on(table.userId, table.tradeDate),
+  uniqueIndex('daily_research_sessions_user_trade_date_dry_unique').on(table.userId, table.tradeDate, table.isDryRun),
 ]);
 
 export const researchSources = pgTable('research_sources', {
@@ -290,6 +303,39 @@ export const approvalRequests = pgTable('approval_requests', {
   decisionNote: text('decision_note'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const rcaReports = pgTable('rca_reports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  researchSessionId: uuid('research_session_id').references(() => dailyResearchSessions.id, { onDelete: 'set null' }),
+  tradeDate: varchar('trade_date', { length: 16 }).notNull(),
+  reportType: varchar('report_type', { length: 64 }).notNull().default('dry_run_eod'),
+  dailySummary: text('daily_summary').notNull().default(''),
+  strategyReview: text('strategy_review').notNull().default(''),
+  agentReasoningReview: text('agent_reasoning_review').notNull().default(''),
+  riskReview: text('risk_review').notNull().default(''),
+  recommendedImprovements: jsonb('recommended_improvements').$type<string[]>().notNull().default([]),
+  promptImprovementSuggestions: jsonb('prompt_improvement_suggestions').$type<string[]>().notNull().default([]),
+  totalPnl: numeric('total_pnl', { precision: 18, scale: 4 }).notNull().default('0'),
+  raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const rcaFindings = pgTable('rca_findings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  rcaReportId: uuid('rca_report_id').notNull().references(() => rcaReports.id, { onDelete: 'cascade' }),
+  orderId: uuid('order_id').references(() => orders.id, { onDelete: 'set null' }),
+  symbol: varchar('symbol', { length: 128 }).notNull().default(''),
+  category: varchar('category', { length: 96 }).notNull().default('thesis_review'),
+  outcome: varchar('outcome', { length: 64 }).notNull().default('flat'),
+  pnl: numeric('pnl', { precision: 18, scale: 4 }).notNull().default('0'),
+  finding: text('finding').notNull().default(''),
+  recommendation: text('recommendation').notNull().default(''),
+  raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type User = typeof users.$inferSelect;

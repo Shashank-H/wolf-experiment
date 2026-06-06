@@ -36,6 +36,13 @@
       "when": 1780662534010,
       "tag": "0004_jazzy_sauron",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1780668000000,
+      "tag": "0005_dry_run_mode",
+      "breakpoints": true
     }
   ]
 }

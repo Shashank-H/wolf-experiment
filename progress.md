@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-UI/settings/research UX update implemented after Phase 4
+Phase 5A global dry-run + RCA loop implemented
 
 ## Tasks
 - Added Phase 3 research persistence, providers, morning research APIs/UI, and fallback planner.
@@ -19,16 +19,25 @@ UI/settings/research UX update implemented after Phase 4
 - Added home-page setup warnings with a CTA to app settings when API keys/auth are missing.
 - Replaced crowded top nav with a fixed vertical sidebar and settings gear shortcut.
 - Cleaned up research UI with summary cards and a right-side deep-dive drawer.
+- Added global dry-run mode setting and scheduler configuration.
+- Added dry-run flags/fields to the existing research and orders tables, plus RCA reports/findings schema and migration.
+- Added global dry-run behavior: normal morning research honors the setting, marks generated GTT candidates as `dry_run_approved`, creates simulated tracked orders, and never places broker orders.
+- Added dry-run EOD flow: marks simulated orders to latest market snapshots, computes hypothetical PnL, closes them, and stores RCA reports/findings.
+- Fed recent RCA learnings into the morning research prompt context.
+- Removed separate Research-page dry-run controls; dry-run is a global Trading Settings mode, not a per-page workflow.
 
 ## Files Changed
 - backend/src/db/schema.ts
 - backend/drizzle/0003_foamy_owl.sql
 - backend/drizzle/0004_jazzy_sauron.sql
+- backend/drizzle/0005_dry_run_mode.sql
 - backend/drizzle/meta/0003_snapshot.json
 - backend/drizzle/meta/0004_snapshot.json
 - backend/drizzle/meta/_journal.json
 - backend/src/providers/research/*
 - backend/src/services/research.ts
+- backend/src/services/dry-run.ts
+- backend/src/services/dry-run-scheduler.ts
 - backend/src/services/risk.ts
 - backend/src/services/triggers.ts
 - backend/src/routes/research.ts
@@ -49,6 +58,7 @@ UI/settings/research UX update implemented after Phase 4
 - docs/implementation/phase-3-summary.md
 - docs/implementation/phase-4-summary.md
 - docs/implementation/ui-settings-research-update.md
+- docs/implementation/phase-5a-dry-run-summary.md
 
 ## Validation
 - `bun run typecheck` passes.
@@ -58,3 +68,6 @@ UI/settings/research UX update implemented after Phase 4
 - Trigger evaluation is implemented as a deterministic helper but is not yet wired to the market polling loop.
 - App/provider settings are no longer in primary navigation; users reach them via the sidebar gear or setup CTA.
 - Research detail is intentionally moved out of the main page into the slide-in drawer.
+- Dry-run PnL depends on available `market_snapshots`; if no quote exists for a symbol it remains tracked at entry/zero until market polling supplies prices.
+- `DRY_RUN_SCHEDULER_ENABLED=true` enables automated morning/EOD tracking and RCA jobs for users with global dry-run mode enabled.
+- Live broker GTT/order placement is intentionally deferred to Phase 5B.

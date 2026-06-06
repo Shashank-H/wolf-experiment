@@ -10,6 +10,9 @@ type Env = {
   APP_ENCRYPTION_KEY: string;
   SESSION_COOKIE_NAME: string;
   SESSION_TTL_DAYS: number;
+  DRY_RUN_SCHEDULER_ENABLED: boolean;
+  DRY_RUN_MORNING_TIME_IST: string;
+  DRY_RUN_EOD_TIME_IST: string;
 };
 
 const runtimeEnv: Record<string, string | undefined> =
@@ -45,6 +48,12 @@ function read(name: string, fallback?: string): string {
   return value;
 }
 
+function booleanEnv(name: string, fallback: boolean): boolean {
+  const raw = runtimeEnv[name];
+  if (raw === undefined || raw === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
+}
+
 function numberEnv(name: string, fallback: number): number {
   const raw = runtimeEnv[name];
   if (!raw) return fallback;
@@ -77,6 +86,9 @@ export const env: Env = {
   APP_ENCRYPTION_KEY: encryptionKey(),
   SESSION_COOKIE_NAME: read('SESSION_COOKIE_NAME', 'wolf_session'),
   SESSION_TTL_DAYS: numberEnv('SESSION_TTL_DAYS', 30),
+  DRY_RUN_SCHEDULER_ENABLED: booleanEnv('DRY_RUN_SCHEDULER_ENABLED', false),
+  DRY_RUN_MORNING_TIME_IST: read('DRY_RUN_MORNING_TIME_IST', '08:45'),
+  DRY_RUN_EOD_TIME_IST: read('DRY_RUN_EOD_TIME_IST', '15:35'),
 };
 
 if (!['development', 'test', 'production'].includes(env.NODE_ENV)) {

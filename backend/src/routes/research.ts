@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { env } from '../config/env';
-import { addManualWatchlistItem, deleteWatchlistItem, getResearchById, getTodayResearch, getTodayWatchlist, runMorningResearch } from '../services/research';
+import { completeDryRunDay, getDryRunHistory, getDryRunToday, runMorningResearchForCurrentMode } from '../services/dry-run';
+import { addManualWatchlistItem, deleteWatchlistItem, getResearchById, getTodayResearch, getTodayWatchlist } from '../services/research';
 import { getUserForToken } from '../utils/session';
 
 async function requireUser(cookie: any, set: any) {
@@ -22,7 +23,7 @@ export const researchRoutes = new Elysia()
       const user = await requireUser(cookie, set);
       if (!user) return { error: 'Unauthorized' };
       try {
-        return { research: await runMorningResearch(user.id) };
+        return { research: await runMorningResearchForCurrentMode(user.id) };
       } catch (error) {
         set.status = 400;
         return { error: error instanceof Error ? error.message : 'Morning research failed' };
@@ -42,6 +43,28 @@ export const researchRoutes = new Elysia()
         return { error: 'Research session not found' };
       }
       return { research };
+    }))
+  .group('/dry-run', (app) => app
+    .get('/today', async ({ cookie, set }) => {
+      const user = await requireUser(cookie, set);
+      if (!user) return { error: 'Unauthorized' };
+      return { dryRun: await getDryRunToday(user.id) };
+    })
+    .get('/history', async ({ cookie, set }) => {
+      const user = await requireUser(cookie, set);
+      if (!user) return { error: 'Unauthorized' };
+      return { dryRuns: await getDryRunHistory(user.id) };
+    })
+    .post('/complete-eod', async ({ body, cookie, set }) => {
+      const user = await requireUser(cookie, set);
+      if (!user) return { error: 'Unauthorized' };
+      const input = bodyRecord(body);
+      const dryRun = await completeDryRunDay(user.id, typeof input.tradeDate === 'string' ? input.tradeDate : undefined);
+      if (!dryRun) {
+        set.status = 404;
+        return { error: 'Dry run session not found' };
+      }
+      return { dryRun };
     }))
   .group('/watchlist', (app) => app
     .get('/today', async ({ cookie, set }) => {

@@ -41,7 +41,7 @@ export type BrokerAccount = {
 };
 
 export type SettingsResponse = {
-  settings?: { yoloModeEnabled?: boolean; killSwitchEnabled?: boolean; providerConfig?: Record<string, string | number | undefined> } | null;
+  settings?: { yoloModeEnabled?: boolean; killSwitchEnabled?: boolean; dryRunModeEnabled?: boolean; providerConfig?: Record<string, string | number | undefined> } | null;
   tradingPreferences?: { maxDailyLoss?: Moneyish; maxTradesPerDay?: Moneyish; maxCapitalPerTrade?: Moneyish; maxOpenPositions?: Moneyish } | null;
   providerKeys?: Array<{ provider: string; label: string; updatedAt?: string }>;
   brokerAccount?: BrokerAccount | null;
@@ -134,3 +134,35 @@ export type ApprovalRequest = {
 
 export type TriggersResponse = { triggers: TriggerRule[] };
 export type ApprovalsResponse = { approvals: ApprovalRequest[] };
+
+export type DryRunTrade = {
+  id: string;
+  exchange: string;
+  tradingsymbol: string;
+  transactionType: string;
+  quantity: number;
+  averagePrice: Moneyish;
+  currentPrice: Moneyish;
+  exitPrice?: Moneyish;
+  pnl: Moneyish;
+  status: string;
+  statusMessage?: string;
+};
+
+export type DryRunBundle = {
+  session: {
+    id: string;
+    tradeDate: string;
+    status: string;
+    dryRunStatus?: string | null;
+    dryRunTotalPnl: Moneyish;
+    dryRunSummary: string;
+    createdAt: string;
+    dryRunCompletedAt?: string | null;
+  };
+  trades: DryRunTrade[];
+  rcaReports: Array<{ id: string; dailySummary: string; totalPnl: Moneyish; raw: Record<string, unknown> }>;
+};
+
+export type DryRunResponse = { dryRun: DryRunBundle | null };
+export type DryRunHistoryResponse = { dryRuns: DryRunBundle[] };

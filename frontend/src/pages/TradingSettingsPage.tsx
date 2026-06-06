@@ -25,6 +25,7 @@ export function TradingSettingsPage() {
   const [message, setMessage] = useState('');
   const [yolo, setYolo] = useState(false);
   const [killSwitch, setKillSwitch] = useState(false);
+  const [dryRun, setDryRun] = useState(false);
   const [trading, setTrading] = useState(DEFAULT_RISK_LIMITS);
   const [research, setResearch] = useState(DEFAULT_RESEARCH);
 
@@ -33,6 +34,7 @@ export function TradingSettingsPage() {
     const config = settings.data?.settings?.providerConfig ?? {};
     setYolo(Boolean(settings.data?.settings?.yoloModeEnabled));
     setKillSwitch(Boolean(settings.data?.settings?.killSwitchEnabled));
+    setDryRun(Boolean(settings.data?.settings?.dryRunModeEnabled));
     setTrading({
       maxDailyLoss: String(preferences?.maxDailyLoss ?? DEFAULT_RISK_LIMITS.maxDailyLoss),
       maxTradesPerDay: String(preferences?.maxTradesPerDay ?? DEFAULT_RISK_LIMITS.maxTradesPerDay),
@@ -73,6 +75,19 @@ export function TradingSettingsPage() {
     }
   }
 
+  async function toggleDryRun() {
+    const next = !dryRun;
+    setDryRun(next);
+    try {
+      await api('/settings/dry-run-mode', { method: 'PUT', body: JSON.stringify({ enabled: next }) });
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+      setMessage(`Dry run mode ${next ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      setDryRun(!next);
+      setMessage(error instanceof Error ? error.message : 'Could not update dry run mode');
+    }
+  }
+
   async function saveTrading(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
@@ -105,6 +120,10 @@ export function TradingSettingsPage() {
         <div className="toggle-row">
           <div><strong>Kill switch</strong><p>Blocks all new trigger risk decisions while enabled.</p></div>
           <button className={killSwitch ? 'switch on' : 'switch'} onClick={toggleKillSwitch} aria-pressed={killSwitch}><span />{killSwitch ? 'On' : 'Off'}</button>
+        </div>
+        <div className="toggle-row">
+          <div><strong>Global dry run mode</strong><p>Blocks broker placement across the system. The MVP flow still tracks simulated orders and EOD PnL for RCA learning.</p></div>
+          <button className={dryRun ? 'switch on' : 'switch'} onClick={toggleDryRun} aria-pressed={dryRun}><span />{dryRun ? 'On' : 'Off'}</button>
         </div>
         {message && <p className="note">[i] {message}</p>}
       </Card>

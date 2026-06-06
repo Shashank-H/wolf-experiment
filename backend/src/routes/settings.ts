@@ -319,4 +319,16 @@ export const settingsRoutes = new Elysia({ prefix: '/settings' })
     });
     await audit(enabled ? 'settings.kill_switch.enable' : 'settings.kill_switch.disable', { userId: user.id });
     return { ok: true, killSwitchEnabled: enabled };
+  })
+  .put('/dry-run-mode', async ({ body, cookie, set }) => {
+    const user = await requireUser(cookie, set);
+    if (!user) return { error: 'Unauthorized' };
+    const input = bodyRecord(body);
+    const enabled = Boolean(input.enabled);
+    await db.insert(userSettings).values({ userId: user.id, dryRunModeEnabled: enabled }).onConflictDoUpdate({
+      target: userSettings.userId,
+      set: { dryRunModeEnabled: enabled, updatedAt: new Date() },
+    });
+    await audit(enabled ? 'settings.dry_run.enable' : 'settings.dry_run.disable', { userId: user.id });
+    return { ok: true, dryRunModeEnabled: enabled };
   });

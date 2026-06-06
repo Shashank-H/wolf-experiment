@@ -54,7 +54,6 @@ export function ResearchPage() {
       </div>
       {research.isLoading ? <SkeletonRows /> : research.isError ? <ErrorNote error={research.error} /> : null}
       {runMorning.isError && <ErrorNote error={runMorning.error} />}
-
       {!bundle && !research.isLoading ? <EmptyState>No morning research session yet. Run research to create today&apos;s thesis, watchlist, candidates and GTT drafts.</EmptyState> : null}
 
       {bundle ? (
