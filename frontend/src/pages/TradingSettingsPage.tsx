@@ -26,6 +26,7 @@ export function TradingSettingsPage() {
   const [yolo, setYolo] = useState(false);
   const [killSwitch, setKillSwitch] = useState(false);
   const [dryRun, setDryRun] = useState(false);
+  const [autoGttManagement, setAutoGttManagement] = useState(false);
   const [trading, setTrading] = useState(DEFAULT_RISK_LIMITS);
   const [research, setResearch] = useState(DEFAULT_RESEARCH);
 
@@ -35,6 +36,7 @@ export function TradingSettingsPage() {
     setYolo(Boolean(settings.data?.settings?.yoloModeEnabled));
     setKillSwitch(Boolean(settings.data?.settings?.killSwitchEnabled));
     setDryRun(Boolean(settings.data?.settings?.dryRunModeEnabled));
+    setAutoGttManagement(Boolean(settings.data?.settings?.autoGttManagementEnabled || settings.data?.settings?.yoloModeEnabled));
     setTrading({
       maxDailyLoss: String(preferences?.maxDailyLoss ?? DEFAULT_RISK_LIMITS.maxDailyLoss),
       maxTradesPerDay: String(preferences?.maxTradesPerDay ?? DEFAULT_RISK_LIMITS.maxTradesPerDay),
@@ -88,6 +90,20 @@ export function TradingSettingsPage() {
     }
   }
 
+  async function toggleAutoGttManagement() {
+    if (yolo) return;
+    const next = !autoGttManagement;
+    setAutoGttManagement(next);
+    try {
+      await api('/settings/auto-gtt-management', { method: 'PUT', body: JSON.stringify({ enabled: next }) });
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+      setMessage(`Auto GTT management ${next ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      setAutoGttManagement(!next);
+      setMessage(error instanceof Error ? error.message : 'Could not update auto GTT management');
+    }
+  }
+
   async function saveTrading(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
@@ -125,6 +141,11 @@ export function TradingSettingsPage() {
           <div><strong>Global dry run mode</strong><p>Blocks broker placement across the system. The MVP flow still tracks simulated orders and EOD PnL for RCA learning.</p></div>
           <button className={dryRun ? 'switch on' : 'switch'} onClick={toggleDryRun} aria-pressed={dryRun}><span />{dryRun ? 'On' : 'Off'}</button>
         </div>
+        <div className="toggle-row">
+          <div><strong>Auto-manage approved GTTs</strong><p>Allows the agent to modify or cancel already-approved broker GTTs during revalidation. YOLO mode forces this on.</p></div>
+          <button className={autoGttManagement ? 'switch on' : 'switch'} disabled={yolo} onClick={toggleAutoGttManagement} aria-pressed={autoGttManagement}><span />{autoGttManagement ? 'On' : 'Off'}</button>
+        </div>
+        {yolo && <p className="note">YOLO mode automatically enables auto GTT management.</p>}
         {message && <p className="note">[i] {message}</p>}
       </Card>
 

@@ -19,7 +19,11 @@ export function GttPage() {
     mutationFn: (id: string) => api(`/gtt/${id}/cancel`, { method: 'POST' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['gtt'] }),
   });
-  const busy = approve.isPending || reject.isPending || cancel.isPending;
+  const revalidate = useMutation({
+    mutationFn: () => api<{ checked: number; flagged: number; autoManaged?: number }>('/gtt/revalidate', { method: 'POST' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['gtt'] }),
+  });
+  const busy = approve.isPending || reject.isPending || cancel.isPending || revalidate.isPending;
 
   if (gtt.error) return <ErrorNote error={gtt.error} />;
   if (gtt.isLoading) return <Card title="GTT orders" marker="[G]"><SkeletonRows /></Card>;
@@ -36,13 +40,14 @@ export function GttPage() {
       </Card>
 
       <Card title="Active app GTTs" marker="[A]">
-        {active.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Broker GTT</th><th>Trigger</th><th>Limit</th><th>Qty</th><th>Status</th><th /></tr></thead><tbody>{active.map((order) => <tr key={order.id}><td>{order.exchange}:{order.tradingsymbol}</td><td>{order.brokerGttId ?? '-'}</td><td>{formatMoney(order.triggerPrice)}</td><td>{formatMoney(order.limitPrice)}</td><td>{order.quantity}</td><td><StatusBadge status={order.status} /></td><td><button className="tiny secondary" disabled={busy} onClick={() => cancel.mutate(order.id)}>Cancel</button></td></tr>)}</tbody></table></div> : <EmptyState>No app-placed GTTs.</EmptyState>}
+        <div className="section-actions"><button className="tiny secondary" disabled={busy} onClick={() => revalidate.mutate()}>Revalidate active GTTs</button>{revalidate.data && <span className="note">Checked {revalidate.data.checked}; flagged {revalidate.data.flagged}; auto-managed {revalidate.data.autoManaged ?? 0}.</span>}</div>
+        {active.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Broker GTT</th><th>Trigger</th><th>Limit</th><th>Qty</th><th>Status</th><th>Message</th><th /></tr></thead><tbody>{active.map((order) => <tr key={order.id}><td>{order.exchange}:{order.tradingsymbol}</td><td>{order.brokerGttId ?? '-'}</td><td>{formatMoney(order.triggerPrice)}</td><td>{formatMoney(order.limitPrice)}</td><td>{order.quantity}</td><td><StatusBadge status={order.status} /></td><td>{order.statusMessage ?? '-'}</td><td><button className="tiny secondary" disabled={busy} onClick={() => cancel.mutate(order.id)}>Cancel</button></td></tr>)}</tbody></table></div> : <EmptyState>No app-placed GTTs.</EmptyState>}
       </Card>
 
       <Card title="Broker status" marker="[B]" className="wide">
         {broker.length ? <div className="table-wrap"><table><thead><tr><th>Broker GTT</th><th>Symbol</th><th>Status</th><th>Created</th></tr></thead><tbody>{broker.map((item) => <tr key={item.gttId}><td>{item.gttId}</td><td>{item.exchange ?? '-'}:{item.tradingsymbol ?? '-'}</td><td><StatusBadge status={item.status ?? 'unknown'} /></td><td>{item.createdAt ? new Date(item.createdAt).toLocaleString() : '-'}</td></tr>)}</tbody></table></div> : <EmptyState>No broker GTTs available, or Kite login is not connected.</EmptyState>}
       </Card>
-      {(approve.error || reject.error || cancel.error) && <ErrorNote error={approve.error ?? reject.error ?? cancel.error} />}
+      {(approve.error || reject.error || cancel.error || revalidate.error) && <ErrorNote error={approve.error ?? reject.error ?? cancel.error ?? revalidate.error} />}
     </div>
   );
 }

@@ -331,4 +331,16 @@ export const settingsRoutes = new Elysia({ prefix: '/settings' })
     });
     await audit(enabled ? 'settings.dry_run.enable' : 'settings.dry_run.disable', { userId: user.id });
     return { ok: true, dryRunModeEnabled: enabled };
+  })
+  .put('/auto-gtt-management', async ({ body, cookie, set }) => {
+    const user = await requireUser(cookie, set);
+    if (!user) return { error: 'Unauthorized' };
+    const input = bodyRecord(body);
+    const enabled = Boolean(input.enabled);
+    await db.insert(userSettings).values({ userId: user.id, autoGttManagementEnabled: enabled }).onConflictDoUpdate({
+      target: userSettings.userId,
+      set: { autoGttManagementEnabled: enabled, updatedAt: new Date() },
+    });
+    await audit(enabled ? 'settings.auto_gtt_management.enable' : 'settings.auto_gtt_management.disable', { userId: user.id });
+    return { ok: true, autoGttManagementEnabled: enabled };
   });

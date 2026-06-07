@@ -37,6 +37,7 @@ export const userSettings = pgTable('user_settings', {
   yoloModeEnabled: boolean('yolo_mode_enabled').notNull().default(false),
   killSwitchEnabled: boolean('kill_switch_enabled').notNull().default(false),
   dryRunModeEnabled: boolean('dry_run_mode_enabled').notNull().default(false),
+  autoGttManagementEnabled: boolean('auto_gtt_management_enabled').notNull().default(false),
   triggerResearchPolicy: varchar('trigger_research_policy', { length: 64 }).notNull().default('only_high_risk'),
   providerConfig: jsonb('provider_config').$type<Record<string, unknown>>().notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

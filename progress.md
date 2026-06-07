@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-Phase 5A complete; Phase 5B live GTT/order execution core implemented
+Phase 5A complete; Phase 5B live GTT/order execution core plus manual and scheduled GTT revalidation implemented
 
 ## Tasks
 - Added Phase 3 research persistence, providers, morning research APIs/UI, and fallback planner.
@@ -32,6 +32,10 @@ Phase 5A complete; Phase 5B live GTT/order execution core implemented
 - Manual approval of `place_order` requests now submits live Kite orders through the execution engine with idempotency and order events.
 - Wired market polling to evaluate active trigger rules; matched triggers now create approvals or YOLO-approved executions after deterministic risk checks.
 - Added frontend GTT Orders screen and sidebar route with candidate approval/rejection, active GTT cancellation, and broker status.
+- Added manual GTT revalidation: active GTTs are checked for stale thesis, expired setup, negative-news/raw flags, market-regime flags, price drift from trigger, and risk blocks; flagged GTTs move to `revalidation_required` with audit metadata.
+- Added `POST /gtt/revalidate` and a frontend revalidation action with checked/flagged feedback and status messages.
+- Added optional `GTT_REVALIDATION_SCHEDULER_ENABLED` background scheduler with configurable `GTT_REVALIDATION_INTERVAL_MINUTES` for stale active GTT checks.
+- Added user-controlled auto GTT management setting; YOLO mode forces it on. When enabled, revalidation can auto-modify a broker GTT if agent-provided modification data exists, or auto-cancel for critical/unsafe cases.
 
 ## Files Changed
 - backend/src/db/schema.ts
@@ -77,7 +81,8 @@ Phase 5A complete; Phase 5B live GTT/order execution core implemented
 - Research detail is intentionally moved out of the main page into the slide-in drawer.
 - Dry-run PnL depends on available `market_snapshots`; if no quote exists for a symbol it remains tracked at entry/zero until market polling supplies prices.
 - `DRY_RUN_SCHEDULER_ENABLED=true` enables automated morning/EOD tracking and RCA jobs for users with global dry-run mode enabled.
-- Live broker GTT/order placement is intentionally deferred to Phase 5B.
+- Live broker GTT/order placement is implemented for approved GTT candidates and approved `place_order` approvals.
+- GTT revalidation is available manually and through the optional background scheduler; scheduler defaults off in local/dev envs.
 
 - Added product decision to docs: `/today` is the primary execution cockpit with tabs for research, GTT, triggers, approvals, orders, and dry-run/RCA.
 - Added `/history` archive and `/history/:date` read-only replay pattern to docs and MVP plan.

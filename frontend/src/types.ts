@@ -41,7 +41,7 @@ export type BrokerAccount = {
 };
 
 export type SettingsResponse = {
-  settings?: { yoloModeEnabled?: boolean; killSwitchEnabled?: boolean; dryRunModeEnabled?: boolean; providerConfig?: Record<string, string | number | undefined> } | null;
+  settings?: { yoloModeEnabled?: boolean; killSwitchEnabled?: boolean; dryRunModeEnabled?: boolean; autoGttManagementEnabled?: boolean; providerConfig?: Record<string, string | number | undefined> } | null;
   tradingPreferences?: { maxDailyLoss?: Moneyish; maxTradesPerDay?: Moneyish; maxCapitalPerTrade?: Moneyish; maxOpenPositions?: Moneyish } | null;
   providerKeys?: Array<{ provider: string; label: string; updatedAt?: string }>;
   brokerAccount?: BrokerAccount | null;

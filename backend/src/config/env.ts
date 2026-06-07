@@ -13,6 +13,8 @@ type Env = {
   DRY_RUN_SCHEDULER_ENABLED: boolean;
   DRY_RUN_MORNING_TIME_IST: string;
   DRY_RUN_EOD_TIME_IST: string;
+  GTT_REVALIDATION_SCHEDULER_ENABLED: boolean;
+  GTT_REVALIDATION_INTERVAL_MINUTES: number;
 };
 
 const runtimeEnv: Record<string, string | undefined> =
@@ -89,6 +91,8 @@ export const env: Env = {
   DRY_RUN_SCHEDULER_ENABLED: booleanEnv('DRY_RUN_SCHEDULER_ENABLED', false),
   DRY_RUN_MORNING_TIME_IST: read('DRY_RUN_MORNING_TIME_IST', '08:45'),
   DRY_RUN_EOD_TIME_IST: read('DRY_RUN_EOD_TIME_IST', '15:35'),
+  GTT_REVALIDATION_SCHEDULER_ENABLED: booleanEnv('GTT_REVALIDATION_SCHEDULER_ENABLED', false),
+  GTT_REVALIDATION_INTERVAL_MINUTES: numberEnv('GTT_REVALIDATION_INTERVAL_MINUTES', 60),
 };
 
 if (!['development', 'test', 'production'].includes(env.NODE_ENV)) {
@@ -97,4 +101,8 @@ if (!['development', 'test', 'production'].includes(env.NODE_ENV)) {
 
 if (!isValidEncryptionKey(env.APP_ENCRYPTION_KEY)) {
   throw new Error('APP_ENCRYPTION_KEY must be base64-encoded 32 bytes. Generate with: openssl rand -base64 32');
+}
+
+if (env.GTT_REVALIDATION_INTERVAL_MINUTES < 1) {
+  throw new Error('GTT_REVALIDATION_INTERVAL_MINUTES must be at least 1');
 }

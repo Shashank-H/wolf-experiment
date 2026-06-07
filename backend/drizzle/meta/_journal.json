@@ -50,6 +50,13 @@
       "when": 1780739735268,
       "tag": "0006_elite_lifeguard",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1780741000000,
+      "tag": "0007_auto_gtt_management",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { Elysia } from 'elysia';
 import { env } from '../config/env';
-import { approveGttCandidate, cancelGtt, listGttState, rejectGttCandidate } from '../services/execution';
+import { approveGttCandidate, cancelGtt, listGttState, rejectGttCandidate, revalidateGtts } from '../services/execution';
 import { getUserForToken } from '../utils/session';
 
 async function requireUser(cookie: any, set: any) {
@@ -47,6 +47,11 @@ export const gttRoutes = new Elysia({ prefix: '/gtt' })
       return { error: 'GTT candidate not found' };
     }
     return { candidate };
+  })
+  .post('/revalidate', async ({ cookie, set }) => {
+    const user = await requireUser(cookie, set);
+    if (!user) return { error: 'Unauthorized' };
+    return await revalidateGtts(user.id);
   })
   .post('/:id/cancel', async ({ cookie, params, set }) => {
     const user = await requireUser(cookie, set);
