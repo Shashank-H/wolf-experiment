@@ -47,6 +47,11 @@ function integerInRange(input: unknown, name: string, min: number, max: number):
   return value;
 }
 
+function istTimeInput(input: unknown, name: string): string {
+  if (typeof input !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(input)) throw new Error(`${name} must be HH:MM in IST`);
+  return input;
+}
+
 function riskTolerance(input: unknown): ResearchRiskTolerance {
   return input === 'moderate' || input === 'aggressive' ? input : 'conservative';
 }
@@ -343,4 +348,30 @@ export const settingsRoutes = new Elysia({ prefix: '/settings' })
     });
     await audit(enabled ? 'settings.auto_gtt_management.enable' : 'settings.auto_gtt_management.disable', { userId: user.id });
     return { ok: true, autoGttManagementEnabled: enabled };
+  })
+  .put('/schedule', async ({ body, cookie, set }) => {
+    const user = await requireUser(cookie, set);
+    if (!user) return { error: 'Unauthorized' };
+    const input = bodyRecord(body);
+    let values;
+    try {
+      values = {
+        tradingSchedulerEnabled: Boolean(input.tradingSchedulerEnabled),
+        morningResearchTimeIst: istTimeInput(input.morningResearchTimeIst ?? '08:45', 'morningResearchTimeIst'),
+        eodRcaTimeIst: istTimeInput(input.eodRcaTimeIst ?? '15:35', 'eodRcaTimeIst'),
+        tradingLoopIntervalMinutes: integerInRange(input.tradingLoopIntervalMinutes ?? 5, 'tradingLoopIntervalMinutes', 1, 1440),
+        gttRevalidationSchedulerEnabled: false,
+        gttRevalidationIntervalMinutes: integerInRange(input.tradingLoopIntervalMinutes ?? 5, 'tradingLoopIntervalMinutes', 1, 1440),
+        updatedAt: new Date(),
+      };
+    } catch (error) {
+      set.status = 400;
+      return { error: error instanceof Error ? error.message : 'Invalid schedule settings' };
+    }
+    await db.insert(userSettings).values({ userId: user.id, ...values }).onConflictDoUpdate({
+      target: userSettings.userId,
+      set: values,
+    });
+    await audit('settings.schedule.update', { userId: user.id, metadata: values });
+    return { ok: true, schedule: values };
   });

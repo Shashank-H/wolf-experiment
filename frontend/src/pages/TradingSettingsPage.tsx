@@ -27,6 +27,7 @@ export function TradingSettingsPage() {
   const [killSwitch, setKillSwitch] = useState(false);
   const [dryRun, setDryRun] = useState(false);
   const [autoGttManagement, setAutoGttManagement] = useState(false);
+  const [schedule, setSchedule] = useState({ tradingSchedulerEnabled: false, morningResearchTimeIst: '08:45', eodRcaTimeIst: '15:35', tradingLoopIntervalMinutes: '5' });
   const [trading, setTrading] = useState(DEFAULT_RISK_LIMITS);
   const [research, setResearch] = useState(DEFAULT_RESEARCH);
 
@@ -37,6 +38,12 @@ export function TradingSettingsPage() {
     setKillSwitch(Boolean(settings.data?.settings?.killSwitchEnabled));
     setDryRun(Boolean(settings.data?.settings?.dryRunModeEnabled));
     setAutoGttManagement(Boolean(settings.data?.settings?.autoGttManagementEnabled || settings.data?.settings?.yoloModeEnabled));
+    setSchedule({
+      tradingSchedulerEnabled: Boolean(settings.data?.settings?.tradingSchedulerEnabled),
+      morningResearchTimeIst: settings.data?.settings?.morningResearchTimeIst ?? '08:45',
+      eodRcaTimeIst: settings.data?.settings?.eodRcaTimeIst ?? '15:35',
+      tradingLoopIntervalMinutes: String(settings.data?.settings?.tradingLoopIntervalMinutes ?? 5),
+    });
     setTrading({
       maxDailyLoss: String(preferences?.maxDailyLoss ?? DEFAULT_RISK_LIMITS.maxDailyLoss),
       maxTradesPerDay: String(preferences?.maxTradesPerDay ?? DEFAULT_RISK_LIMITS.maxTradesPerDay),
@@ -104,6 +111,17 @@ export function TradingSettingsPage() {
     }
   }
 
+  async function saveSchedule(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      await api('/settings/schedule', { method: 'PUT', body: JSON.stringify({ ...schedule, tradingLoopIntervalMinutes: Number(schedule.tradingLoopIntervalMinutes) }) });
+      await queryClient.invalidateQueries({ queryKey: ['settings'] });
+      setMessage('Schedule settings saved');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not save schedule settings');
+    }
+  }
+
   async function saveTrading(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
@@ -150,6 +168,19 @@ export function TradingSettingsPage() {
       </Card>
 
       <div className="settings-grid">
+        <Card title="Trading workflow schedule" marker="[T]">
+          <form onSubmit={saveSchedule} className="stack" autoComplete="off">
+            <div className="toggle-row"><div><strong>Scheduled trading workflow</strong><p>Runs morning research, intraday maintenance, GTT safety review, broker sync hooks, and EOD RCA from one schedule. Dry-run vs live is decided by mode. Default: off.</p></div><button type="button" className={schedule.tradingSchedulerEnabled ? 'switch on' : 'switch'} onClick={() => setSchedule({ ...schedule, tradingSchedulerEnabled: !schedule.tradingSchedulerEnabled })}><span />{schedule.tradingSchedulerEnabled ? 'On' : 'Off'}</button></div>
+            <div className="field-grid">
+              <Field label="Morning research IST" info="Default 08:45."><span className="disabled-field-tooltip" data-tooltip="Enable Scheduled trading workflow before editing this time."><input disabled={!schedule.tradingSchedulerEnabled} type="time" value={schedule.morningResearchTimeIst} onChange={(e) => setSchedule({ ...schedule, morningResearchTimeIst: e.target.value })} /></span></Field>
+              <Field label="EOD RCA IST" info="Default 15:35."><span className="disabled-field-tooltip" data-tooltip="Enable Scheduled trading workflow before editing this time."><input disabled={!schedule.tradingSchedulerEnabled} type="time" value={schedule.eodRcaTimeIst} onChange={(e) => setSchedule({ ...schedule, eodRcaTimeIst: e.target.value })} /></span></Field>
+              <Field label="Intraday loop interval" info="Default 5 minutes. Runs GTT revalidation and other maintenance in one loop."><span className="disabled-field-tooltip" data-tooltip="Enable Scheduled trading workflow before editing this interval."><input disabled={!schedule.tradingSchedulerEnabled} value={schedule.tradingLoopIntervalMinutes} onChange={(e) => setSchedule({ ...schedule, tradingLoopIntervalMinutes: e.target.value })} type="number" min="1" max="1440" /></span></Field>
+            </div>
+            <p className="note">A conservative 5-minute loop is the default for Zerodha retail usage. Keep this at or above 1 minute.</p>
+            <button disabled={settings.isLoading}>Save trading schedule</button>
+          </form>
+        </Card>
+
         <Card title="Risk limits" marker="[R]">
           {settings.error && <ErrorNote error={settings.error} />}
           <form onSubmit={saveTrading} className="stack" autoComplete="off">

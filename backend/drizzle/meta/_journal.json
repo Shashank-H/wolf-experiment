@@ -57,6 +57,20 @@
       "when": 1780741000000,
       "tag": "0007_auto_gtt_management",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1780742000000,
+      "tag": "0008_scheduler_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1780743000000,
+      "tag": "0009_trading_loop_interval",
+      "breakpoints": true
     }
   ]
 }

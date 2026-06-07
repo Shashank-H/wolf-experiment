@@ -34,7 +34,7 @@ Phase 5A complete; Phase 5B live GTT/order execution core plus manual and schedu
 - Added frontend GTT Orders screen and sidebar route with candidate approval/rejection, active GTT cancellation, and broker status.
 - Added manual GTT revalidation: active GTTs are checked for stale thesis, expired setup, negative-news/raw flags, market-regime flags, price drift from trigger, and risk blocks; flagged GTTs move to `revalidation_required` with audit metadata.
 - Added `POST /gtt/revalidate` and a frontend revalidation action with checked/flagged feedback and status messages.
-- Added optional `GTT_REVALIDATION_SCHEDULER_ENABLED` background scheduler with configurable `GTT_REVALIDATION_INTERVAL_MINUTES` for stale active GTT checks.
+- Replaced dry-run/GTT schedule env knobs with one UI/database trading workflow schedule. Env now only has `TRADING_SCHEDULER_WORKER_ENABLED` as the deployment guard; per-user morning research time, EOD RCA time, and one intraday loop interval are configured in Trading Settings. The intraday loop runs GTT revalidation and is the place for broker sync/market maintenance hooks.
 - Added user-controlled auto GTT management setting; YOLO mode forces it on. When enabled, revalidation can auto-modify a broker GTT if agent-provided modification data exists, or auto-cancel for critical/unsafe cases.
 
 ## Files Changed
