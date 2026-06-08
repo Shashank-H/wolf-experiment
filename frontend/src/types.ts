@@ -96,9 +96,12 @@ export type GttCandidate = {
   transactionType: string;
   triggerPrice?: Moneyish;
   limitPrice?: Moneyish;
+  targetPrice?: Moneyish;
+  stopLossPrice?: Moneyish;
   quantity: number;
   rationale: string;
   status: string;
+  raw?: Record<string, unknown>;
 };
 
 export type GttOrder = {
@@ -109,9 +112,12 @@ export type GttOrder = {
   transactionType: string;
   triggerPrice: Moneyish;
   limitPrice: Moneyish;
+  targetPrice?: Moneyish;
+  stopLossPrice?: Moneyish;
   quantity: number;
   status: string;
   statusMessage?: string | null;
+  raw?: Record<string, unknown>;
   placedAt?: string | null;
   cancelledAt?: string | null;
 };

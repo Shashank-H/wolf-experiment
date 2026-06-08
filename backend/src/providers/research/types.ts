@@ -49,6 +49,8 @@ export type MorningResearchPlan = {
     transactionType: 'BUY' | 'SELL';
     triggerPrice?: number;
     limitPrice?: number;
+    stopLossPrice?: number;
+    targetPrice?: number;
     quantity: number;
     rationale: string;
   }>;

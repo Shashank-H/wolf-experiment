@@ -4,7 +4,15 @@
 
 AI Trading Copilot is a single-user-first, multi-user-ready trading assistant for Zerodha Kite.
 
-The system performs morning market research, generates watchlists and trigger rules, monitors markets through configurable polling, optionally places GTTs/orders, manages risk, stores all trading decisions, and produces end-of-day RCA reports.
+The system performs morning market research, generates watchlists and trigger rules, monitors markets through configurable polling, manages risk, stores all trading decisions, and produces end-of-day RCA reports.
+
+## Trading Safety Invariant
+
+Wolf never places regular market/limit orders.
+
+The only broker-side trading action allowed is placing, modifying, or cancelling Kite two-leg GTT orders that include both a target and a stoploss.
+
+App triggers are internal workflow automations only. They must never directly call broker execution APIs.
 
 The MVP is designed for Indian equities only, but the architecture must support future expansion to other brokers, asset classes, and global markets.
 
@@ -410,7 +418,7 @@ In YOLO mode:
 morning research runs
 agent generates GTT/order candidates
 risk engine validates
-system can place approved-by-policy GTTs/orders automatically
+system can place approved-by-policy two-leg Kite GTTs automatically
 ```
 
 ### YOLO Mode Still Requires
@@ -775,10 +783,10 @@ trade_candidate_id
 ### Responsibilities
 
 ```txt
-place orders
-place GTTs
-modify orders
-cancel orders
+place two-leg Kite GTTs with target + stoploss
+modify two-leg Kite GTTs with target + stoploss
+cancel Kite GTTs
+never place/modify/cancel regular market or limit orders
 sync order status
 sync positions
 handle rejection
@@ -809,7 +817,7 @@ duplicate prevention
 broker response logging
 rate-limit protection
 retry only when safe
-never blindly retry market orders
+never place or retry regular market/limit orders
 ```
 
 ---
@@ -1531,7 +1539,7 @@ Trigger engine evaluates rules
     ↓
 Risk engine validates triggered signals
     ↓
-Execution engine places Kite orders/GTTs
+Execution engine places/modifies/cancels only two-leg Kite GTTs
     ↓
 System stores every decision and event
     ↓

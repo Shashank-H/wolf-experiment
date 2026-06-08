@@ -326,14 +326,14 @@ YOLO mode:
 - Enabling YOLO mode requires explicit confirmation.
 
 Execution engine:
-- places/modifies/cancels orders and GTTs;
+- places/modifies/cancels only two-leg Kite GTTs with target and stoploss; regular market/limit orders are disabled;
 - syncs order status and positions;
 - handles rejection;
 - stores broker responses;
 - uses idempotency keys and duplicate prevention;
 - protects against broker rate limits;
 - retries only when safe;
-- never blindly retries market orders.
+- never places or retries regular market/limit orders.
 
 Idempotency key example: `user_id + date + symbol + strategy_id + action + trigger_rule_id`.
 

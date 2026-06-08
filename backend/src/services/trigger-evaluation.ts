@@ -1,10 +1,8 @@
 import { and, eq, gt } from 'drizzle-orm';
 import { db } from '../db/client';
-import { approvalRequests, triggerEvents, triggerRules } from '../db/schema';
+import { triggerEvents, triggerRules } from '../db/schema';
 import type { Quote } from '../providers/broker/types';
 import { audit } from '../utils/audit';
-import { executeApprovedOrderFromApproval } from './execution';
-import { createApprovalFromRisk, evaluateRisk } from './risk';
 import { evaluateTrigger, type TriggerRuleDsl } from './triggers';
 
 export async function evaluateMarketTriggers(userId: string, quotes: Quote[]) {
@@ -23,21 +21,9 @@ export async function evaluateMarketTriggers(userId: string, quotes: Quote[]) {
       await db.update(triggerRules).set({ lastEvaluatedAt: now, updatedAt: now }).where(eq(triggerRules.id, trigger.id));
       if (!isMatch) continue;
       matched += 1;
-      const { result, row } = await evaluateRisk(userId, trigger.orderDraft, trigger.id);
-      let approvalId: string | undefined;
-      let orderId: string | undefined;
-      if (result.decision === 'ALLOW') {
-        const [approval] = await db.insert(approvalRequests).values({ userId, triggerRuleId: trigger.id, riskDecisionId: row.id, status: 'approved', requestedAction: 'place_order', payload: trigger.orderDraft, rationale: 'YOLO mode risk-approved trigger execution.', decidedAt: now, decisionNote: 'Auto-approved by YOLO mode.' }).returning();
-        approvalId = approval.id;
-        const execution = await executeApprovedOrderFromApproval(userId, approval.id);
-        orderId = execution?.order.id;
-      } else if (result.decision === 'NEEDS_APPROVAL' || result.decision === 'NEEDS_RESEARCH_REVALIDATION') {
-        const approval = await createApprovalFromRisk(userId, row.id, trigger.orderDraft as Record<string, unknown>, trigger.id);
-        approvalId = approval.id;
-      }
-      await db.insert(triggerEvents).values({ userId, triggerRuleId: trigger.id, eventType: 'matched', matched: true, marketContext: context, message: `Matched quote; risk decision ${result.decision}` });
+      await db.insert(triggerEvents).values({ userId, triggerRuleId: trigger.id, eventType: 'matched', matched: true, marketContext: context, message: 'Matched quote; trigger recorded as internal app automation only. No broker API was called.' });
       await db.update(triggerRules).set({ status: 'triggered', updatedAt: now }).where(eq(triggerRules.id, trigger.id));
-      await audit('trigger.market.match', { userId, entityType: 'trigger_rule', entityId: trigger.id, metadata: { riskDecision: result.decision, approvalId, orderId } });
+      await audit('trigger.market.match', { userId, entityType: 'trigger_rule', entityId: trigger.id, metadata: { internalOnly: true, brokerExecution: false } });
     }
   }
   return { evaluated, matched };

@@ -1,7 +1,7 @@
 # Progress
 
 ## Status
-Phase 5A complete; Phase 5B live GTT/order execution core plus manual and scheduled GTT revalidation implemented
+Phase 5A complete; Phase 5B GTT-only live execution core plus manual and scheduled GTT revalidation implemented. Trading safety invariant enforced: no regular market/limit broker orders; triggers are internal-only; live broker actions are limited to two-leg Kite GTT place/modify/cancel with target + stoploss.
 
 ## Tasks
 - Added Phase 3 research persistence, providers, morning research APIs/UI, and fallback planner.
@@ -28,14 +28,14 @@ Phase 5A complete; Phase 5B live GTT/order execution core plus manual and schedu
 
 - Added Phase 5B live execution core with `gtt_orders`, order idempotency keys, broker response/event logging, and migration `0006_elite_lifeguard.sql`.
 - Added `/gtt` APIs for candidates, active app GTTs, broker GTT status, approve/reject/cancel.
-- GTT approval now places live Kite GTTs when dry-run mode and kill switch are off; dry-run globally blocks broker placement.
-- Manual approval of `place_order` requests now submits live Kite orders through the execution engine with idempotency and order events.
-- Wired market polling to evaluate active trigger rules; matched triggers now create approvals or YOLO-approved executions after deterministic risk checks.
+- GTT approval now places only live two-leg Kite GTTs with target and stoploss when dry-run mode and kill switch are off; dry-run globally blocks broker placement.
+- Disabled regular market/limit broker order placement, modification, and cancellation paths in the Kite adapter and approval execution service.
+- Wired market polling to evaluate active trigger rules; matched triggers now only record internal app trigger events and never call broker execution APIs.
 - Added frontend GTT Orders screen and sidebar route with candidate approval/rejection, active GTT cancellation, and broker status.
 - Added manual GTT revalidation: active GTTs are checked for stale thesis, expired setup, negative-news/raw flags, market-regime flags, price drift from trigger, and risk blocks; flagged GTTs move to `revalidation_required` with audit metadata.
 - Added `POST /gtt/revalidate` and a frontend revalidation action with checked/flagged feedback and status messages.
 - Replaced dry-run/GTT schedule env knobs with one UI/database trading workflow schedule. Env now only has `TRADING_SCHEDULER_WORKER_ENABLED` as the deployment guard; per-user morning research time, EOD RCA time, and one intraday loop interval are configured in Trading Settings. The intraday loop runs GTT revalidation and is the place for broker sync/market maintenance hooks.
-- Added user-controlled auto GTT management setting; YOLO mode forces it on. When enabled, revalidation can auto-modify a broker GTT if agent-provided modification data exists, or auto-cancel for critical/unsafe cases.
+- Added user-controlled auto GTT management setting; YOLO mode forces it on. When enabled, revalidation can auto-modify a broker two-leg GTT if agent-provided target + stoploss modification data exists, or auto-cancel for critical/unsafe cases.
 
 ## Files Changed
 - backend/src/db/schema.ts
@@ -81,7 +81,7 @@ Phase 5A complete; Phase 5B live GTT/order execution core plus manual and schedu
 - Research detail is intentionally moved out of the main page into the slide-in drawer.
 - Dry-run PnL depends on available `market_snapshots`; if no quote exists for a symbol it remains tracked at entry/zero until market polling supplies prices.
 - `DRY_RUN_SCHEDULER_ENABLED=true` enables automated morning/EOD tracking and RCA jobs for users with global dry-run mode enabled.
-- Live broker GTT/order placement is implemented for approved GTT candidates and approved `place_order` approvals.
+- Live broker placement is GTT-only: approved GTT candidates place two-leg Kite GTTs with target + stoploss; approved app approvals never place regular broker orders.
 - GTT revalidation is available manually and through the optional background scheduler; scheduler defaults off in local/dev envs.
 
 - Added product decision to docs: `/today` is the primary execution cockpit with tabs for research, GTT, triggers, approvals, orders, and dry-run/RCA.

@@ -17,7 +17,7 @@ export function ApprovalsPage() {
 
   return (
     <Card title="Pending approvals" marker="[A]">
-      <p className="note">Approving a place-order request now submits it through the live execution engine unless dry-run mode or kill switch blocks broker placement.</p>
+      <p className="note">Approvals are internal app decisions only. Wolf never places regular market/limit orders; broker-side trading is limited to two-leg Kite GTTs from the GTT page.</p>
       {approvals.error ? <ErrorNote error={approvals.error} /> : approvals.isLoading ? <SkeletonRows /> : approvals.data?.approvals.length ? (
         <div className="table-wrap"><table><thead><tr><th>Action</th><th>Status</th><th>Payload</th><th>Rationale</th><th>Requested</th><th /></tr></thead><tbody>{approvals.data.approvals.map((approval) => <tr key={approval.id}><td>{approval.requestedAction}</td><td><StatusBadge status={approval.status} /></td><td><pre>{JSON.stringify(approval.payload, null, 2)}</pre></td><td>{approval.rationale}</td><td>{new Date(approval.createdAt).toLocaleString()}</td><td><div className="row"><button className="tiny" disabled={approve.isPending || reject.isPending} onClick={() => approve.mutate(approval.id)}>Approve</button><button className="tiny secondary" disabled={approve.isPending || reject.isPending} onClick={() => reject.mutate(approval.id)}>Reject</button></div></td></tr>)}</tbody></table></div>
       ) : <EmptyState>No approvals pending.</EmptyState>}

@@ -1,9 +1,10 @@
 import { and, desc, eq, lt } from 'drizzle-orm';
 import { db } from '../db/client';
-import { approvalRequests, gttCandidates, gttOrders, marketSnapshots, orderEvents, orders, tradingPreferences, userSettings } from '../db/schema';
+import { gttCandidates, gttOrders, marketSnapshots, tradingPreferences, userSettings } from '../db/schema';
+import { TRADING_SAFETY_INVARIANT, regularOrderExecutionDisabled } from '../trading-safety';
 import { audit } from '../utils/audit';
 import { kiteAdapterForUser, upsertKiteBrokerAccount } from './broker-sync';
-import { parseOrderDraft } from './risk';
+import { evaluateRisk } from './risk';
 
 const activeGttStatuses = ['created', 'submitted', 'active', 'open'];
 const staleGttAgeMs = 2 * 24 * 60 * 60 * 1000;
@@ -29,29 +30,50 @@ export async function approveGttCandidate(userId: string, candidateId: string) {
   const existing = await findExistingGtt(userId, idempotencyKey);
   if (existing) return { candidate, gttOrder: existing, idempotent: true };
 
-  const triggerPrice = Number(candidate.triggerPrice ?? 0);
-  const limitPrice = Number(candidate.limitPrice ?? candidate.triggerPrice ?? 0);
-  if (!Number.isFinite(triggerPrice) || triggerPrice <= 0) throw new Error('GTT trigger price is required before broker placement');
-  if (!Number.isFinite(limitPrice) || limitPrice <= 0) throw new Error('GTT limit price is required before broker placement');
+  const bracket = parseBracketGtt(candidate.raw, candidate.targetPrice ?? candidate.triggerPrice, candidate.stopLossPrice ?? candidate.limitPrice, candidate.quantity, candidate.transactionType);
+  const { result: risk } = await evaluateRisk(userId, {
+    exchange: candidate.exchange,
+    tradingsymbol: candidate.tradingsymbol,
+    transactionType: candidate.transactionType,
+    product: 'CNC',
+    orderType: 'LIMIT',
+    quantity: candidate.quantity,
+    price: bracket.capitalReferencePrice,
+    strategy: bracket.strategy,
+    rationale: candidate.rationale,
+  }, undefined);
+  if (risk.decision === 'BLOCK') throw new Error(`GTT blocked by risk engine: ${risk.reasons.join('; ')}`);
 
   const adapter = await kiteAdapterForUser(userId);
   if (!adapter) throw new Error('Kite API key and access token are required before GTT placement');
   const account = await upsertKiteBrokerAccount(userId, adapter);
-  const lastPrice = await getLastPrice(userId, candidate.exchange, candidate.tradingsymbol, triggerPrice);
+  const lastPrice = await getLastPrice(userId, candidate.exchange, candidate.tradingsymbol, bracket.capitalReferencePrice);
   const brokerResult = await adapter.createGtt({
+    type: 'two-leg',
     exchange: candidate.exchange,
     tradingsymbol: candidate.tradingsymbol,
-    triggerValues: [triggerPrice],
+    triggerValues: [bracket.targetPrice, bracket.stopLossPrice],
     lastPrice,
-    orders: [{
-      exchange: candidate.exchange,
-      tradingsymbol: candidate.tradingsymbol,
-      transaction_type: candidate.transactionType,
-      quantity: candidate.quantity,
-      order_type: 'LIMIT',
-      product: 'CNC',
-      price: limitPrice,
-    }],
+    orders: [
+      {
+        exchange: candidate.exchange,
+        tradingsymbol: candidate.tradingsymbol,
+        transaction_type: bracket.exitTransactionType,
+        quantity: candidate.quantity,
+        order_type: 'LIMIT',
+        product: 'CNC',
+        price: bracket.targetPrice,
+      },
+      {
+        exchange: candidate.exchange,
+        tradingsymbol: candidate.tradingsymbol,
+        transaction_type: bracket.exitTransactionType,
+        quantity: candidate.quantity,
+        order_type: 'LIMIT',
+        product: 'CNC',
+        price: bracket.stopLossPrice,
+      },
+    ],
   });
 
   const [gttOrder] = await db.insert(gttOrders).values({
@@ -62,17 +84,19 @@ export async function approveGttCandidate(userId: string, candidateId: string) {
     idempotencyKey,
     exchange: candidate.exchange,
     tradingsymbol: candidate.tradingsymbol,
-    transactionType: candidate.transactionType,
-    triggerPrice: String(triggerPrice),
-    limitPrice: String(limitPrice),
+    transactionType: bracket.exitTransactionType,
+    triggerPrice: String(bracket.targetPrice),
+    limitPrice: String(bracket.stopLossPrice),
+    targetPrice: String(bracket.targetPrice),
+    stopLossPrice: String(bracket.stopLossPrice),
     quantity: candidate.quantity,
     status: brokerResult.status ?? 'submitted',
-    statusMessage: 'Placed through Kite GTT',
-    raw: brokerResult.raw as Record<string, unknown>,
+    statusMessage: 'Placed through Kite two-leg GTT with target and stoploss',
+    raw: { ...(brokerResult.raw as Record<string, unknown>), safetyInvariant: TRADING_SAFETY_INVARIANT, bracket, risk },
     placedAt: new Date(),
   }).returning();
   const [updatedCandidate] = await db.update(gttCandidates).set({ status: 'placed', updatedAt: new Date() }).where(eq(gttCandidates.id, candidate.id)).returning();
-  await audit('gtt.approve.place', { userId, entityType: 'gtt_candidate', entityId: candidate.id, metadata: { brokerGttId: brokerResult.gttId, gttOrderId: gttOrder.id } });
+  await audit('gtt.approve.place', { userId, entityType: 'gtt_candidate', entityId: candidate.id, metadata: { brokerGttId: brokerResult.gttId, gttOrderId: gttOrder.id, twoLeg: true, riskDecision: risk.decision } });
   return { candidate: updatedCandidate, gttOrder, idempotent: false };
 }
 
@@ -162,35 +186,50 @@ async function autoManageRevalidatedGtt(userId: string, gtt: typeof gttOrders.$i
   const modification = suggestedGttModification(raw);
 
   if (!criticalCancel && modification) {
-    const triggerPrice = modification.triggerPrice;
-    const limitPrice = modification.limitPrice ?? modification.triggerPrice;
+    const targetPrice = modification.targetPrice;
+    const stopLossPrice = modification.stopLossPrice;
     const quantity = modification.quantity ?? gtt.quantity;
+    const transactionType = modification.transactionType ?? gtt.transactionType;
     const brokerResult = await adapter.modifyGtt({
+      type: 'two-leg',
       gttId: gtt.brokerGttId,
       exchange: modification.exchange ?? gtt.exchange,
       tradingsymbol: modification.tradingsymbol ?? gtt.tradingsymbol,
-      triggerValues: [triggerPrice],
-      lastPrice: Number.isFinite(lastPrice) && lastPrice > 0 ? lastPrice : triggerPrice,
-      orders: [{
-        exchange: modification.exchange ?? gtt.exchange,
-        tradingsymbol: modification.tradingsymbol ?? gtt.tradingsymbol,
-        transaction_type: modification.transactionType ?? gtt.transactionType,
-        quantity,
-        order_type: 'LIMIT',
-        product: 'CNC',
-        price: limitPrice,
-      }],
+      triggerValues: [targetPrice, stopLossPrice],
+      lastPrice: Number.isFinite(lastPrice) && lastPrice > 0 ? lastPrice : Math.max(targetPrice, stopLossPrice),
+      orders: [
+        {
+          exchange: modification.exchange ?? gtt.exchange,
+          tradingsymbol: modification.tradingsymbol ?? gtt.tradingsymbol,
+          transaction_type: transactionType,
+          quantity,
+          order_type: 'LIMIT',
+          product: 'CNC',
+          price: targetPrice,
+        },
+        {
+          exchange: modification.exchange ?? gtt.exchange,
+          tradingsymbol: modification.tradingsymbol ?? gtt.tradingsymbol,
+          transaction_type: transactionType,
+          quantity,
+          order_type: 'LIMIT',
+          product: 'CNC',
+          price: stopLossPrice,
+        },
+      ],
     });
     const [updated] = await db.update(gttOrders).set({
       exchange: modification.exchange ?? gtt.exchange,
       tradingsymbol: modification.tradingsymbol ?? gtt.tradingsymbol,
-      transactionType: modification.transactionType ?? gtt.transactionType,
-      triggerPrice: String(triggerPrice),
-      limitPrice: String(limitPrice),
+      transactionType,
+      triggerPrice: String(targetPrice),
+      limitPrice: String(stopLossPrice),
+      targetPrice: String(targetPrice),
+      stopLossPrice: String(stopLossPrice),
       quantity,
       status: 'auto_modified',
       statusMessage: `Auto-modified after revalidation: ${reasons.join(', ')}`,
-      raw: { ...gtt.raw, revalidation: { checkedAt: now.toISOString(), reasons, action: 'modify', brokerResult: brokerResult.raw } },
+      raw: { ...gtt.raw, revalidation: { checkedAt: now.toISOString(), reasons, action: 'modify', brokerResult: brokerResult.raw }, bracket: { targetPrice, stopLossPrice, transactionType } },
       updatedAt: now,
     }).where(eq(gttOrders.id, gtt.id)).returning();
     await audit('gtt.revalidation.auto_modify', { userId, entityType: 'gtt_order', entityId: gtt.id, metadata: { reasons, brokerGttId: gtt.brokerGttId } });
@@ -228,45 +267,8 @@ export async function cancelGtt(userId: string, id: string) {
   return updated;
 }
 
-export async function executeApprovedOrderFromApproval(userId: string, approvalId: string) {
-  await assertLiveTradingAllowed(userId);
-  const [approval] = await db.select().from(approvalRequests).where(and(eq(approvalRequests.userId, userId), eq(approvalRequests.id, approvalId))).limit(1);
-  if (!approval) return null;
-  const orderDraft = parseOrderDraft(approval.payload);
-  const idempotencyKey = `approval:${approval.id}:place_order:v1`;
-  const [existing] = await db.select().from(orders).where(and(eq(orders.userId, userId), eq(orders.idempotencyKey, idempotencyKey))).limit(1);
-  if (existing) return { order: existing, idempotent: true };
-
-  const adapter = await kiteAdapterForUser(userId);
-  if (!adapter) throw new Error('Kite API key and access token are required before broker order placement');
-  const account = await upsertKiteBrokerAccount(userId, adapter);
-  const [created] = await db.insert(orders).values({
-    userId,
-    brokerAccountId: account.id,
-    idempotencyKey,
-    exchange: orderDraft.exchange,
-    tradingsymbol: orderDraft.tradingsymbol,
-    transactionType: orderDraft.transactionType,
-    product: orderDraft.product,
-    orderType: orderDraft.orderType,
-    quantity: String(orderDraft.quantity),
-    status: 'submitting',
-    raw: { source: 'approval', approvalId },
-  } as any).returning();
-  await db.insert(orderEvents).values({ userId, orderId: created.id, eventType: 'submit_started', message: 'Broker order submission started from approved request', raw: { approvalId } });
-
-  try {
-    const result = await adapter.placeOrder({ ...orderDraft, tag: `wolf-${approval.id.slice(0, 12)}` });
-    const [updated] = await db.update(orders).set({ brokerOrderId: result.orderId, status: result.status ?? 'submitted', raw: result.raw as Record<string, unknown>, placedAt: new Date(), updatedAt: new Date() }).where(eq(orders.id, created.id)).returning();
-    await db.insert(orderEvents).values({ userId, orderId: created.id, eventType: 'submitted', brokerStatus: result.status, message: 'Broker accepted order submission', raw: result.raw as Record<string, unknown> });
-    await audit('order.execute.approval', { userId, entityType: 'order', entityId: updated.id, metadata: { approvalId, brokerOrderId: result.orderId } });
-    return { order: updated, idempotent: false };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Broker order placement failed';
-    const [failed] = await db.update(orders).set({ status: 'failed', statusMessage: message, updatedAt: new Date() }).where(eq(orders.id, created.id)).returning();
-    await db.insert(orderEvents).values({ userId, orderId: created.id, eventType: 'submit_failed', message, raw: { approvalId } });
-    throw Object.assign(new Error(message), { order: failed });
-  }
+export async function executeApprovedOrderFromApproval(_userId: string, _approvalId: string) {
+  regularOrderExecutionDisabled();
 }
 
 async function assertLiveTradingAllowed(userId: string) {
@@ -291,24 +293,59 @@ async function getLastMarketSnapshot(userId: string, exchange: string, tradingsy
   return snapshot ?? null;
 }
 
+function parseBracketGtt(raw: Record<string, unknown>, targetPriceValue: unknown, stopLossPriceValue: unknown, quantity: number, transactionTypeValue: string) {
+  const explicitTargetPrice = firstPositiveNumber(raw.targetPrice, raw.target_price, raw.target, raw.takeProfitPrice, raw.take_profit_price, raw.tpPrice, targetPriceValue);
+  const explicitStopLossPrice = firstPositiveNumber(raw.stopLossPrice, raw.stoplossPrice, raw.stop_loss_price, raw.stopLoss, raw.stoploss, raw.slPrice, stopLossPriceValue);
+  const legacyTriggerPrice = optionalPositiveNumber(targetPriceValue);
+  const legacyLimitPrice = optionalPositiveNumber(stopLossPriceValue);
+  const resolvedTarget = explicitTargetPrice ?? (legacyTriggerPrice && legacyLimitPrice && legacyTriggerPrice !== legacyLimitPrice ? Math.max(legacyTriggerPrice, legacyLimitPrice) : undefined);
+  const resolvedStopLoss = explicitStopLossPrice ?? (legacyTriggerPrice && legacyLimitPrice && legacyTriggerPrice !== legacyLimitPrice ? Math.min(legacyTriggerPrice, legacyLimitPrice) : undefined);
+  if (!resolvedTarget || !resolvedStopLoss) throw new Error('Kite GTT placement requires both targetPrice and stopLossPrice');
+  if (resolvedTarget === resolvedStopLoss) throw new Error('Kite GTT targetPrice and stopLossPrice must be different');
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new Error('Kite GTT quantity must be a positive integer');
+  const exitTransactionType = String(transactionTypeValue).toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
+  if (exitTransactionType === 'SELL' && resolvedTarget <= resolvedStopLoss) throw new Error('SELL exit GTT requires targetPrice above stopLossPrice');
+  if (exitTransactionType === 'BUY' && resolvedTarget >= resolvedStopLoss) throw new Error('BUY exit GTT requires targetPrice below stopLossPrice');
+  return {
+    targetPrice: resolvedTarget,
+    stopLossPrice: resolvedStopLoss,
+    capitalReferencePrice: Math.max(resolvedTarget, resolvedStopLoss),
+    exitTransactionType,
+    strategy: typeof raw.strategy === 'string' ? raw.strategy : undefined,
+  };
+}
+
 function suggestedGttModification(raw: Record<string, unknown>) {
   const source = raw.suggestedGtt ?? raw.gttModification ?? raw.autoGttModification;
   if (!source || typeof source !== 'object') return null;
   const input = source as Record<string, unknown>;
-  const triggerPrice = Number(input.triggerPrice ?? input.trigger_price);
-  const limitPrice = Number(input.limitPrice ?? input.limit_price ?? triggerPrice);
+  const targetPrice = firstPositiveNumber(input.targetPrice, input.target_price, input.target, input.takeProfitPrice, input.take_profit_price, input.triggerPrice, input.trigger_price);
+  const stopLossPrice = firstPositiveNumber(input.stopLossPrice, input.stoplossPrice, input.stop_loss_price, input.stopLoss, input.stoploss, input.slPrice, input.limitPrice, input.limit_price);
   const quantity = input.quantity === undefined ? undefined : Number(input.quantity);
-  if (!Number.isFinite(triggerPrice) || triggerPrice <= 0) return null;
-  if (!Number.isFinite(limitPrice) || limitPrice <= 0) return null;
+  if (!targetPrice || !stopLossPrice || targetPrice === stopLossPrice) return null;
   if (quantity !== undefined && (!Number.isSafeInteger(quantity) || quantity <= 0)) return null;
   return {
     exchange: typeof input.exchange === 'string' ? input.exchange : undefined,
     tradingsymbol: typeof input.tradingsymbol === 'string' ? input.tradingsymbol : undefined,
     transactionType: typeof input.transactionType === 'string' ? input.transactionType : typeof input.transaction_type === 'string' ? input.transaction_type : undefined,
-    triggerPrice,
-    limitPrice,
+    targetPrice,
+    stopLossPrice,
     quantity,
   };
+}
+
+function firstPositiveNumber(...values: unknown[]) {
+  for (const value of values) {
+    const number = optionalPositiveNumber(value);
+    if (number !== undefined) return number;
+  }
+  return undefined;
+}
+
+function optionalPositiveNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
 function hasExpiredSetup(raw: Record<string, unknown>, now: Date) {

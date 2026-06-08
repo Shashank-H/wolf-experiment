@@ -2,8 +2,6 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db/client';
 import { approvalRequests, triggerEvents, triggerRules } from '../db/schema';
 import { audit } from '../utils/audit';
-import { executeApprovedOrderFromApproval } from './execution';
-import { createApprovalFromRisk, evaluateRisk, parseOrderDraft } from './risk';
 
 export type TriggerRuleDsl = {
   version: 1;
@@ -42,22 +40,18 @@ export async function listTriggers(userId: string) {
   return db.select().from(triggerRules).where(eq(triggerRules.userId, userId)).orderBy(desc(triggerRules.createdAt));
 }
 
-export async function createTrigger(userId: string, input: { name?: unknown; rule: unknown; orderDraft: unknown; status?: unknown }) {
+export async function createTrigger(userId: string, input: { name?: unknown; rule: unknown; orderDraft?: unknown; actionPayload?: unknown; status?: unknown }) {
   const { rule, expiresAt } = validateTriggerRule(input.rule);
-  const orderDraft = parseOrderDraft(input.orderDraft);
+  const actionPayload = validateInternalActionPayload(input.actionPayload ?? input.orderDraft ?? {});
   const status = input.status === 'draft' ? 'draft' : 'active';
-  const [trigger] = await db.insert(triggerRules).values({ userId, name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : `${orderDraft.tradingsymbol} trigger`, rule: rule as unknown as Record<string, unknown>, orderDraft: orderDraft as unknown as Record<string, unknown>, expiresAt, status }).returning();
-  const { result, row } = await evaluateRisk(userId, orderDraft, trigger.id);
-  let approval = null;
-  if (result.decision === 'NEEDS_APPROVAL' || result.decision === 'NEEDS_RESEARCH_REVALIDATION') {
-    approval = await createApprovalFromRisk(userId, row.id, { ...orderDraft, rationale: orderDraft.rationale ?? `Trigger ${trigger.name}` }, trigger.id);
-  }
-  await db.insert(triggerEvents).values({ userId, triggerRuleId: trigger.id, eventType: 'created', matched: false, message: `Created with risk decision ${result.decision}`, marketContext: {} });
-  await audit('trigger.create', { userId, entityType: 'trigger_rule', entityId: trigger.id, metadata: { riskDecision: result.decision, approvalId: approval?.id } });
-  return { trigger, risk: result, approval };
+  const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : 'Internal app trigger';
+  const [trigger] = await db.insert(triggerRules).values({ userId, name, rule: rule as unknown as Record<string, unknown>, orderDraft: actionPayload, expiresAt, status }).returning();
+  await db.insert(triggerEvents).values({ userId, triggerRuleId: trigger.id, eventType: 'created', matched: false, message: 'Created as internal app trigger; no broker order can be placed by this trigger.', marketContext: {} });
+  await audit('trigger.create', { userId, entityType: 'trigger_rule', entityId: trigger.id, metadata: { internalOnly: true } });
+  return { trigger, risk: null, approval: null };
 }
 
-export async function updateTrigger(userId: string, id: string, input: { name?: unknown; rule?: unknown; orderDraft?: unknown; status?: unknown }) {
+export async function updateTrigger(userId: string, id: string, input: { name?: unknown; rule?: unknown; orderDraft?: unknown; actionPayload?: unknown; status?: unknown }) {
   const [existing] = await db.select().from(triggerRules).where(and(eq(triggerRules.userId, userId), eq(triggerRules.id, id))).limit(1);
   if (!existing) return null;
   const values: Partial<typeof triggerRules.$inferInsert> = { updatedAt: new Date() };
@@ -68,7 +62,7 @@ export async function updateTrigger(userId: string, id: string, input: { name?: 
     values.rule = rule as unknown as Record<string, unknown>;
     values.expiresAt = expiresAt;
   }
-  if (input.orderDraft !== undefined) values.orderDraft = parseOrderDraft(input.orderDraft) as unknown as Record<string, unknown>;
+  if (input.orderDraft !== undefined || input.actionPayload !== undefined) values.orderDraft = validateInternalActionPayload(input.actionPayload ?? input.orderDraft ?? {}) as unknown as Record<string, unknown>;
   const [updated] = await db.update(triggerRules).set(values).where(eq(triggerRules.id, id)).returning();
   await audit('trigger.update', { userId, entityType: 'trigger_rule', entityId: id });
   return updated;
@@ -89,12 +83,20 @@ export async function pendingApprovals(userId: string) {
 export async function decideApproval(userId: string, id: string, decision: 'approved' | 'rejected', note?: string) {
   const [approval] = await db.update(approvalRequests).set({ status: decision, decisionNote: note, decidedAt: new Date(), updatedAt: new Date() }).where(and(eq(approvalRequests.userId, userId), eq(approvalRequests.id, id), eq(approvalRequests.status, 'pending'))).returning();
   if (!approval) return null;
-  let execution: Awaited<ReturnType<typeof executeApprovedOrderFromApproval>> | null = null;
-  if (decision === 'approved' && approval.requestedAction === 'place_order') {
-    execution = await executeApprovedOrderFromApproval(userId, approval.id);
+  await audit(`approval.${decision}`, { userId, entityType: 'approval_request', entityId: id, metadata: { note, brokerExecution: false } });
+  return { approval, execution: null };
+}
+
+function validateInternalActionPayload(value: unknown): Record<string, unknown> {
+  if (value === undefined || value === null || value === '') return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('actionPayload must be an object');
+  const payload = value as Record<string, unknown>;
+  const forbidden = ['place_order', 'placeOrder', 'regular_order', 'regularOrder', 'market_order', 'marketOrder', 'limit_order', 'limitOrder', 'broker_execution', 'brokerExecution'];
+  const text = JSON.stringify(payload).toLowerCase();
+  if (forbidden.some((term) => text.includes(term.toLowerCase()))) {
+    throw new Error('Triggers are internal app automations only and cannot request broker order execution');
   }
-  await audit(`approval.${decision}`, { userId, entityType: 'approval_request', entityId: id, metadata: { note, orderId: execution?.order.id } });
-  return { approval, execution };
+  return payload;
 }
 
 function validateConditions(value: unknown, label: string): TriggerCondition[] {

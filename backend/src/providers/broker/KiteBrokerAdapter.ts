@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { regularOrderExecutionDisabled } from '../../trading-safety';
 import type { BrokerAdapter } from './BrokerAdapter';
 import type {
   BrokerGtt,
@@ -122,24 +123,16 @@ export class KiteBrokerAdapter implements BrokerAdapter {
     );
   }
 
-  placeOrder(input: PlaceOrderInput): Promise<BrokerOrderResult> {
-    return this.request<any>('/orders/regular', { method: 'POST', body: formBody(orderPayload(input)) }).then((data) => ({
-      orderId: String(data.order_id),
-      raw: data,
-    }));
+  placeOrder(_input: PlaceOrderInput): Promise<BrokerOrderResult> {
+    regularOrderExecutionDisabled();
   }
 
-  modifyOrder(input: ModifyOrderInput): Promise<BrokerOrderResult> {
-    const variety = input.variety ?? 'regular';
-    return this.request<any>(`/orders/${variety}/${input.orderId}`, { method: 'PUT', body: formBody(orderPayload(input)) }).then((data) => ({
-      orderId: String(data.order_id ?? input.orderId),
-      raw: data,
-    }));
+  modifyOrder(_input: ModifyOrderInput): Promise<BrokerOrderResult> {
+    regularOrderExecutionDisabled();
   }
 
-  async cancelOrder(input: CancelOrderInput): Promise<void> {
-    const variety = input.variety ?? 'regular';
-    await this.request(`/orders/${variety}/${input.orderId}`, { method: 'DELETE' });
+  async cancelOrder(_input: CancelOrderInput): Promise<void> {
+    regularOrderExecutionDisabled();
   }
 
   createGtt(input: CreateGttInput): Promise<BrokerGttResult> {
@@ -199,8 +192,11 @@ function orderPayload(input: Partial<PlaceOrderInput>) {
 }
 
 function gttPayload(input: CreateGttInput) {
+  if (input.type === 'two-leg' && (input.triggerValues.length !== 2 || input.orders.length !== 2)) {
+    throw new Error('Kite two-leg GTT requires exactly two trigger values and two orders: target and stoploss');
+  }
   return {
-    type: 'single',
+    type: input.type ?? 'two-leg',
     condition: JSON.stringify({ exchange: input.exchange, tradingsymbol: input.tradingsymbol, trigger_values: input.triggerValues, last_price: input.lastPrice }),
     orders: JSON.stringify(input.orders),
   };

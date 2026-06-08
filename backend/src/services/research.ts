@@ -132,10 +132,12 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
       transactionType: item.transactionType,
       triggerPrice: item.triggerPrice === undefined ? null : String(item.triggerPrice),
       limitPrice: item.limitPrice === undefined ? null : String(item.limitPrice),
+      targetPrice: item.targetPrice === undefined ? null : String(item.targetPrice),
+      stopLossPrice: item.stopLossPrice === undefined ? null : String(item.stopLossPrice),
       quantity: clampInt(item.quantity, 1, 1_000_000),
       rationale: item.rationale,
       status: 'draft',
-      raw: item as unknown as Record<string, unknown>,
+      raw: { ...(item as unknown as Record<string, unknown>), stopLossPrice: item.stopLossPrice, targetPrice: item.targetPrice },
     }))).returning()
     : [];
 
@@ -276,7 +278,7 @@ function normalizePlan(raw: Record<string, unknown>, context: BrokerContext, sou
     sectorBias: arrayValue(raw.sectorBias).slice(0, 8).map((item) => ({ sector: stringValue(item.sector) || 'Market', bias: normalizeSectorBias(item.bias), reason: stringValue(item.reason) || 'No reason supplied.' })),
     watchlist: arrayValue(raw.watchlist).slice(0, settings.maxWatchlistItems).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), bias: normalizeBias(item.bias), reason: stringValue(item.reason) || 'LLM watchlist item.' })).filter((item) => item.tradingsymbol) || fallback.watchlist,
     tradeCandidates: arrayValue(raw.tradeCandidates).slice(0, settings.maxTradeCandidates).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), side: normalizeSide(item.side), thesis: stringValue(item.thesis) || 'No thesis supplied.', entryPlan: stringValue(item.entryPlan) || 'Manual confirmation required.', invalidation: stringValue(item.invalidation) || 'Abort if risk checks fail.', confidence: clampInt(Number(item.confidence ?? 0), 0, 100) })).filter((item) => item.tradingsymbol),
-    gttCandidates: arrayValue(raw.gttCandidates).slice(0, settings.maxGttCandidates).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), transactionType: normalizeSide(item.transactionType), triggerPrice: optionalNumber(item.triggerPrice), limitPrice: optionalNumber(item.limitPrice), quantity: clampInt(Number(item.quantity ?? 1), 1, 1_000_000), rationale: stringValue(item.rationale) || 'Draft GTT suggestion.' })).filter((item) => item.tradingsymbol),
+    gttCandidates: arrayValue(raw.gttCandidates).slice(0, settings.maxGttCandidates).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), transactionType: normalizeSide(item.transactionType), triggerPrice: optionalNumber(item.triggerPrice ?? item.targetPrice), limitPrice: optionalNumber(item.limitPrice ?? item.stopLossPrice), stopLossPrice: optionalNumber(item.stopLossPrice ?? item.stoplossPrice ?? item.stop_loss_price ?? item.limitPrice), targetPrice: optionalNumber(item.targetPrice ?? item.target_price ?? item.target ?? item.triggerPrice), quantity: clampInt(Number(item.quantity ?? 1), 1, 1_000_000), rationale: stringValue(item.rationale) || 'Draft two-leg GTT suggestion.' })).filter((item) => item.tradingsymbol),
     riskWarnings: arrayValue(raw.riskWarnings).map((item) => String(item)).slice(0, 12),
   };
 }

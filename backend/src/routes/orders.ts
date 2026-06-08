@@ -2,11 +2,10 @@ import { desc, eq } from 'drizzle-orm';
 import { Elysia } from 'elysia';
 import { env } from '../config/env';
 import { db } from '../db/client';
-import { apiKeys, orderEvents, orders, userSettings } from '../db/schema';
-import { KiteBrokerAdapter } from '../providers/broker/KiteBrokerAdapter';
+import { orderEvents, orders } from '../db/schema';
 import { syncOrders } from '../services/broker-sync';
+import { TRADING_SAFETY_INVARIANT } from '../trading-safety';
 import { audit } from '../utils/audit';
-import { decryptSecret } from '../utils/crypto';
 import { getUserForToken } from '../utils/session';
 
 async function requireUser(cookie: any, set: any) {
@@ -19,19 +18,6 @@ async function requireUser(cookie: any, set: any) {
 }
 
 const cancellableStatuses = new Set(['created', 'risk_validated', 'pending_approval', 'approved', 'submitted', 'open']);
-
-async function kiteAdapterForUser(userId: string): Promise<KiteBrokerAdapter | null> {
-  const [keys, settingsRows] = await Promise.all([
-    db.select().from(apiKeys).where(eq(apiKeys.userId, userId)),
-    db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1),
-  ]);
-  const byLabel = new Map(keys.filter((key) => key.provider === 'kite').map((key) => [key.label, key]));
-  const apiKey = byLabel.get('api_key');
-  const accessToken = byLabel.get('access_token');
-  const apiUrl = typeof settingsRows[0]?.providerConfig?.kiteApiUrl === 'string' ? settingsRows[0].providerConfig.kiteApiUrl : undefined;
-  if (!apiKey || !accessToken) return null;
-  return new KiteBrokerAdapter({ apiKey: decryptSecret(apiKey), accessToken: decryptSecret(accessToken), apiUrl });
-}
 
 export const orderRoutes = new Elysia({ prefix: '/orders' })
   .post('/sync', async ({ cookie, set }) => {
@@ -80,15 +66,11 @@ export const orderRoutes = new Elysia({ prefix: '/orders' })
       return { error: `Order status ${order.status} cannot be cancelled` };
     }
     if (order.brokerOrderId) {
-      const adapter = await kiteAdapterForUser(user.id);
-      if (!adapter) {
-        set.status = 400;
-        return { error: 'Kite API key and access token are required before broker cancellation can be submitted' };
-      }
-      await adapter.cancelOrder({ orderId: order.brokerOrderId });
+      set.status = 400;
+      return { error: TRADING_SAFETY_INVARIANT };
     }
     const [updated] = await db.update(orders).set({ status: 'cancel_requested', updatedAt: new Date() }).where(eq(orders.id, order.id)).returning();
-    await db.insert(orderEvents).values({ userId: user.id, orderId: order.id, eventType: 'cancel_requested', brokerStatus: order.status, message: order.brokerOrderId ? 'Cancel submitted to Kite by user' : 'Internal cancel requested by user' });
-    await audit('order.cancel.request', { userId: user.id, entityType: 'order', entityId: order.id, metadata: { brokerOrderId: order.brokerOrderId, submittedToBroker: Boolean(order.brokerOrderId) } });
+    await db.insert(orderEvents).values({ userId: user.id, orderId: order.id, eventType: 'cancel_requested', brokerStatus: order.status, message: 'Internal cancel requested by user; no broker regular order API call was made' });
+    await audit('order.cancel.request', { userId: user.id, entityType: 'order', entityId: order.id, metadata: { brokerOrderId: order.brokerOrderId, submittedToBroker: false, safetyInvariant: true } });
     return { order: updated };
   });

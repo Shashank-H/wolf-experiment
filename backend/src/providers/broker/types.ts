@@ -73,6 +73,7 @@ export type BrokerOrder = BrokerOrderResult & {
 };
 
 export type CreateGttInput = {
+  type?: 'single' | 'two-leg';
   tradingsymbol: string;
   exchange: string;
   triggerValues: number[];

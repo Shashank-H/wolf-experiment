@@ -7,7 +7,7 @@ Build an AI-assisted trading copilot for Zerodha Kite that:
 * researches the market before trading hours
 * generates watchlists and trigger rules
 * monitors markets using configurable polling
-* optionally places GTTs/orders automatically in YOLO mode
+* optionally places, modifies, or cancels two-leg Kite GTTs automatically in YOLO mode
 * enforces deterministic risk checks
 * stores all AI/trading decisions
 * generates end-of-day RCA reports
@@ -111,7 +111,7 @@ Trigger engine evaluates rules
     ↓
 Risk engine validates triggers
     ↓
-Execution engine places orders/GTTs
+Execution engine only places/modifies/cancels two-leg Kite GTTs with target and stoploss; regular market/limit orders are out of scope
     ↓
 System stores all events
     ↓

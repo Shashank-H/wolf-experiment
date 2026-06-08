@@ -448,7 +448,7 @@ PUT  /settings/dry-run-mode
 
 ### Goals
 
-Place Kite GTTs/orders safely in manual and YOLO modes after dry-run validation.
+Place/modify/cancel only two-leg Kite GTTs safely in manual and YOLO modes after dry-run validation; regular market/limit orders remain disabled.
 
 ### Backend Tasks
 
@@ -507,7 +507,7 @@ POST /gtt/:id/cancel
 ### Deliverables
 
 - Approved GTTs can be placed through Kite.
-- YOLO mode can place GTTs/orders only after risk approval.
+- YOLO mode can place/modify/cancel two-leg Kite GTTs only after risk approval; Wolf never places regular market/limit orders.
 - Execution events and broker responses are auditable.
 
 ---
