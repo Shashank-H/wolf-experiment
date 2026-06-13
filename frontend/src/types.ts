@@ -139,7 +139,9 @@ export type BrokerGtt = {
   createdAt?: string;
 };
 
-export type GttResponse = { candidates: GttCandidate[]; gttOrders: GttOrder[]; brokerGtts: BrokerGtt[] };
+export type BrokerGttStatus = 'connected' | 'missing_credentials' | 'fetch_failed';
+
+export type GttResponse = { candidates: GttCandidate[]; gttOrders: GttOrder[]; brokerGtts: BrokerGtt[] | null; brokerStatus?: BrokerGttStatus };
 
 export type ResearchBundle = {
   session: ResearchSession;

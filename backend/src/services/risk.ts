@@ -60,8 +60,13 @@ export async function evaluateRisk(userId: string, orderDraftInput: unknown, tri
   if ((prefs?.maxCapitalPerTrade ?? 0) > 0 && capital > 0) checks.push({ check: 'max_capital_per_trade', ok: capital <= Number(prefs?.maxCapitalPerTrade ?? 0), message: `Estimated capital ${capital} vs limit ${prefs?.maxCapitalPerTrade}.` });
   checks.push({ check: 'max_pending_approvals', ok: Number(pendingApprovals[0]?.value ?? 0) < 10, message: `${pendingApprovals[0]?.value ?? 0}/10 pending approvals.` });
   checks.push({ check: 'duplicate_prevention', ok: Number(duplicateOrders[0]?.value ?? 0) === 0, message: 'No active duplicate order for symbol.' });
-  checks.push({ check: 'liquidity_spread_placeholder', ok: true, message: 'Liquidity/spread provider check not wired yet; manual approval still required.' });
-  checks.push({ check: 'daily_loss_placeholder', ok: true, message: 'Daily realized PnL feed not wired yet.' });
+  if (isBrokerActionableDraft(orderDraft)) {
+    checks.push({ check: 'liquidity_spread_unavailable', ok: false, message: 'Liquidity/spread provider check is not wired; live broker action is blocked.' });
+    checks.push({ check: 'daily_loss_unavailable', ok: false, message: 'Daily realized PnL feed is not wired; live broker action is blocked.' });
+  } else {
+    checks.push({ check: 'liquidity_spread_unavailable', ok: true, message: 'Liquidity/spread provider check is not wired; non-broker dry-run/research action only.' });
+    checks.push({ check: 'daily_loss_unavailable', ok: true, message: 'Daily realized PnL feed is not wired; non-broker dry-run/research action only.' });
+  }
 
   const failed = checks.filter((check) => !check.ok);
   const highRisk = capital === 0 || failed.length > 0 || orderDraft.orderType !== 'MARKET';
@@ -81,6 +86,10 @@ export async function evaluateRisk(userId: string, orderDraftInput: unknown, tri
 export async function createApprovalFromRisk(userId: string, riskDecisionId: string, payload: Record<string, unknown>, triggerRuleId?: string) {
   const [approval] = await db.insert(approvalRequests).values({ userId, triggerRuleId, riskDecisionId, payload, rationale: typeof payload.rationale === 'string' ? payload.rationale : 'Risk validated action needs manual approval.' }).returning();
   return approval;
+}
+
+function isBrokerActionableDraft(orderDraft: OrderDraft): boolean {
+  return orderDraft.product !== 'DRY_RUN' && orderDraft.product !== 'SIMULATED' && orderDraft.product !== 'PAPER';
 }
 
 function record(input: unknown): Record<string, unknown> {

@@ -10,11 +10,13 @@ export function OverviewPage() {
   const brokerAccount = settings.data?.brokerAccount;
   const hasKey = (provider: string, label?: string) => keys.some((key) => key.provider === provider && (!label || key.label === label));
   const kiteTokenExpired = Boolean(brokerAccount?.accessTokenExpiresAt && new Date(brokerAccount.accessTokenExpiresAt).getTime() <= Date.now());
+  const hasAnyResearchSource = hasKey('exa') || hasKey('finnhub');
   const setupIssues = [
     !hasKey('kite', 'api_key') || !hasKey('kite', 'api_secret') ? 'Kite API key and secret are missing.' : null,
     hasKey('kite', 'api_key') && hasKey('kite', 'api_secret') && !brokerAccount ? 'Zerodha authentication is pending.' : null,
     kiteTokenExpired ? 'Zerodha token expired; re-authentication is required.' : null,
-    !hasKey('llm') ? 'LLM API key is missing; research will use fallback output.' : null,
+    !hasKey('llm') ? 'LLM API key is required before morning research can run.' : null,
+    !hasAnyResearchSource ? 'At least one research source provider is required: configure Exa or Finnhub.' : null,
   ].filter(Boolean);
 
   return (
@@ -22,7 +24,7 @@ export function OverviewPage() {
       {setupIssues.length > 0 && (
         <Card title="Action required" marker="[!]" className="wide setup-card">
           <ul className="plain-list">{setupIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
-          <Link to="/settings" className="button-link">Configure app settings</Link>
+          <Link to="/settings" className="button-link">Configure required providers in Settings</Link>
         </Card>
       )}
       <Card title="Broker" marker="[+]">

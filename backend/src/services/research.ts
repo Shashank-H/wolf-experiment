@@ -38,9 +38,21 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
   const researchSettings = parseResearchSettings(providerConfig);
   const providerWarnings: string[] = [];
   const symbols = [...new Set([...context.holdings.map((row) => row.tradingsymbol), ...context.positions.map((row) => row.tradingsymbol), ...DEFAULT_SYMBOLS])].slice(0, 16);
-  const sources = await collectSources(symbols, secrets, providerWarnings);
   const model = typeof providerConfig.mediumModel === 'string' && providerConfig.mediumModel.trim() ? providerConfig.mediumModel.trim() : 'gpt-4o-mini';
-  const { plan, conversation } = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, rcaLearnings });
+  assertResearchPreflight(secrets);
+  const { sources, errors: sourceErrors } = await collectSources(symbols, secrets);
+  providerWarnings.push(...sourceErrors);
+  let plan: MorningResearchPlan;
+  let conversation: AgentConversationTrace;
+  try {
+    if (!sources.length) throw new Error(`Morning research requires at least one successful external source: ${sourceErrors.join('; ') || 'no sources returned'}`);
+    ({ plan, conversation } = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, rcaLearnings }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Morning research failed';
+    const session = await persistFailedResearchSession({ userId, tradeDate, isDryRun, model, message, providerWarnings, context, sources });
+    await audit('research.morning.failed', { userId, entityType: 'daily_research_session', entityId: session.id, metadata: { tradeDate, error: message, sources: sources.length } });
+    throw error;
+  }
 
   const [session] = await db.insert(dailyResearchSessions).values({
     userId,
@@ -49,7 +61,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
     marketThesis: plan.marketThesis,
     sectorBias: plan.sectorBias,
     riskWarnings: [...plan.riskWarnings, ...providerWarnings],
-    model: secrets.llmApiKey ? model : 'deterministic-fallback',
+    model,
     rawPlan: plan as unknown as Record<string, unknown>,
     agentConversation: conversation as unknown as Record<string, unknown>,
     isDryRun,
@@ -62,7 +74,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
       marketThesis: plan.marketThesis,
       sectorBias: plan.sectorBias,
       riskWarnings: [...plan.riskWarnings, ...providerWarnings],
-      model: secrets.llmApiKey ? model : 'deterministic-fallback',
+      model,
       rawPlan: plan as unknown as Record<string, unknown>,
       agentConversation: conversation as unknown as Record<string, unknown>,
       isDryRun,
@@ -208,83 +220,158 @@ async function loadSecrets(userId: string) {
   return { exaApiKey: secret('exa', 'api_key'), finnhubApiKey: secret('finnhub', 'api_key'), llmApiKey: secret('llm', 'api_key') };
 }
 
-async function collectSources(symbols: string[], secrets: Awaited<ReturnType<typeof loadSecrets>>, warnings: string[]): Promise<ResearchSource[]> {
-  const tasks: Array<Promise<ResearchSource[]>> = [];
-  if (secrets.exaApiKey) tasks.push(new ExaProvider(secrets.exaApiKey).search({ query: `Indian equity market news ${symbols.slice(0, 8).join(' ')}`, symbols, limit: 8 }));
-  else warnings.push('Exa API key missing; web research skipped.');
-  if (secrets.finnhubApiKey) tasks.push(new FinnhubProvider(secrets.finnhubApiKey).search({ query: 'market news', symbols: symbols.filter((symbol) => /^[A-Z.]+$/.test(symbol)), limit: 8 }));
-  else warnings.push('Finnhub API key missing; market news skipped.');
-  const settled = await Promise.allSettled(tasks);
-  return settled.flatMap((result) => {
-    if (result.status === 'fulfilled') return result.value;
-    warnings.push(result.reason instanceof Error ? result.reason.message : 'Research provider failed');
-    return [];
-  }).slice(0, 24);
+function assertResearchPreflight(secrets: Awaited<ReturnType<typeof loadSecrets>>) {
+  if (!secrets.llmApiKey) throw new Error('LLM API key is required before morning research can start');
+  if (!secrets.exaApiKey && !secrets.finnhubApiKey) throw new Error('At least one research source provider is required before morning research can start: configure Exa or Finnhub');
+}
+
+async function collectSources(symbols: string[], secrets: Awaited<ReturnType<typeof loadSecrets>>): Promise<{ sources: ResearchSource[]; errors: string[] }> {
+  const tasks: Array<{ provider: string; promise: Promise<ResearchSource[]> }> = [];
+  const errors: string[] = [];
+  if (secrets.exaApiKey) tasks.push({ provider: 'exa', promise: new ExaProvider(secrets.exaApiKey).search({ query: `Indian equity market news ${symbols.slice(0, 8).join(' ')}`, symbols, limit: 8 }) });
+  if (secrets.finnhubApiKey) tasks.push({ provider: 'finnhub', promise: new FinnhubProvider(secrets.finnhubApiKey).search({ query: 'market news', symbols: symbols.filter((symbol) => /^[A-Z.]+$/.test(symbol)), limit: 8 }) });
+  const settled = await Promise.allSettled(tasks.map((task) => task.promise));
+  const sources: ResearchSource[] = [];
+  for (const [index, result] of settled.entries()) {
+    const provider = tasks[index]?.provider ?? 'research';
+    if (result.status === 'fulfilled') {
+      if (result.value.length) sources.push(...result.value);
+      else errors.push(`${provider} returned no research sources`);
+    } else {
+      errors.push(`${provider} failed: ${result.reason instanceof Error ? result.reason.message : 'Research provider failed'}`);
+    }
+  }
+  return { sources: sources.slice(0, 24), errors };
 }
 
 async function buildPlan(input: { context: BrokerContext; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings; rcaLearnings: Awaited<ReturnType<typeof loadRcaLearnings>> }): Promise<{ plan: MorningResearchPlan; conversation: AgentConversationTrace }> {
-  const ideasMessages = buildMorningResearchIdeasMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings });
-  if (!input.llmApiKey) {
-    input.providerWarnings.push('LLM API key missing; generated deterministic fallback plan.');
-    const plan = fallbackPlan(input.context, input.sources, input.researchSettings);
-    const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings, ideasPlan: plan });
-    return { plan, conversation: fallbackConversation(input.model, [...ideasMessages, ...gttMessages], plan, 'LLM API key missing; deterministic fallback used.') };
-  }
-
+  if (!input.llmApiKey) throw new Error('LLM API key is required before morning research can start');
   const llm = new OpenAiCompatibleProvider(input.llmApiKey, input.llmBaseUrl);
-  let ideasPlan: MorningResearchIdeasPlan;
-  let ideasConversation: AgentConversationTrace;
-  try {
-    const result = await llm.generateJsonWithConversation({ model: input.model, temperature: 0.15, messages: ideasMessages });
-    ideasPlan = normalizeIdeasPlan(result.json, input.context, input.sources, input.researchSettings);
-    ideasConversation = { ...result.conversation, thoughtDetails: [...result.conversation.thoughtDetails, ...deriveIdeasThoughtDetails(ideasPlan)] };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'LLM plan failed';
-    input.providerWarnings.push(message);
-    const plan = fallbackPlan(input.context, input.sources, input.researchSettings);
-    const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings, ideasPlan: plan });
-    return { plan, conversation: fallbackConversation(input.model, [...ideasMessages, ...gttMessages], plan, message, 'failed') };
-  }
+
+  const ideasMessages = buildMorningResearchIdeasMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings });
+  const ideasResult = await generateValidatedJsonWithRetry({
+    llm,
+    model: input.model,
+    temperature: 0.15,
+    messages: ideasMessages,
+    stage: 'ideas',
+    validate: (json) => normalizeIdeasPlan(json, input.researchSettings),
+  });
+  const ideasPlan = ideasResult.value;
+  const ideasConversation = { ...ideasResult.conversation, thoughtDetails: [...ideasResult.conversation.thoughtDetails, ...deriveIdeasThoughtDetails(ideasPlan)] };
 
   const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings, ideasPlan: ideasPlan as unknown as Record<string, unknown> });
-  try {
-    const result = await llm.generateJsonWithConversation({ model: input.model, temperature: 0.1, messages: gttMessages });
-    const gttPlan = normalizeGttPlan(result.json, input.researchSettings);
-    const plan: MorningResearchPlan = { ...ideasPlan, ...gttPlan };
-    return { plan, conversation: mergeConversations(input.model, ideasConversation, { ...result.conversation, thoughtDetails: [...result.conversation.thoughtDetails, ...deriveGttThoughtDetails(gttPlan)] }, plan) };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'LLM GTT drafting failed';
-    input.providerWarnings.push(message);
-    const gttPlan = fallbackGttPlan(input.researchSettings);
-    const plan: MorningResearchPlan = { ...ideasPlan, ...gttPlan };
-    const fallbackGttConversation = fallbackConversation(input.model, gttMessages, plan, message, 'failed');
-    return { plan, conversation: mergeConversations(input.model, ideasConversation, fallbackGttConversation, plan, 'failed', message) };
-  }
+  const gttResult = await generateValidatedJsonWithRetry({
+    llm,
+    model: input.model,
+    temperature: 0.1,
+    messages: gttMessages,
+    stage: 'gtt',
+    validate: (json) => normalizeGttPlan(json, input.researchSettings),
+  });
+  const gttPlan = gttResult.value;
+  const plan: MorningResearchPlan = { ...ideasPlan, ...gttPlan };
+  return { plan, conversation: mergeConversations(input.model, ideasConversation, { ...gttResult.conversation, thoughtDetails: [...gttResult.conversation.thoughtDetails, ...deriveGttThoughtDetails(gttPlan)] }, plan) };
 }
 
-function fallbackConversation(model: string, messages: LlmMessage[], plan: MorningResearchPlan, reason: string, status: 'fallback' | 'failed' = 'fallback'): AgentConversationTrace {
+type ValidatedJsonRequest<T> = {
+  llm: OpenAiCompatibleProvider;
+  model: string;
+  temperature: number;
+  messages: LlmMessage[];
+  stage: string;
+  validate: (json: Record<string, unknown>) => T;
+};
+
+const llmRepairAttempts = 1;
+
+async function generateValidatedJsonWithRetry<T>(input: ValidatedJsonRequest<T>): Promise<{ value: T; conversation: AgentConversationTrace }> {
+  let messages = input.messages;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= llmRepairAttempts; attempt += 1) {
+    try {
+      const result = await input.llm.generateJsonWithConversation({ model: input.model, temperature: input.temperature, messages });
+      const value = input.validate(result.json);
+      return {
+        value,
+        conversation: {
+          ...result.conversation,
+          messages: result.conversation.messages.map((message) => ({ ...message, metadata: { ...(message.metadata ?? {}), stage: input.stage, attempt: attempt + 1 } })),
+          rawResponse: { ...(result.conversation.rawResponse ?? {}), attempts: attempt + 1, repaired: attempt > 0 },
+        },
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= llmRepairAttempts) break;
+      messages = [
+        ...input.messages,
+        {
+          role: 'user',
+          content: [
+            `The previous ${input.stage} response was invalid: ${error instanceof Error ? error.message : 'invalid response'}.`,
+            'Retry once and return only a corrected JSON object that exactly matches the requested schema.',
+            'Do not invent defaults for missing fields; provide evidence-backed values or empty arrays only where the schema permits empty arrays.',
+          ].join('\n'),
+        },
+      ];
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`LLM ${input.stage} response failed validation`);
+}
+
+function failedConversation(model: string, reason: string, providerWarnings: string[], sources: ResearchSource[]): AgentConversationTrace {
   const now = new Date().toISOString();
   return {
-    provider: 'deterministic-fallback',
+    provider: 'openai-compatible',
     model,
     startedAt: now,
     completedAt: now,
-    status,
-    messages: [
-      ...messages.map((message) => ({ ...message, createdAt: now, metadata: { source: 'request' } })),
-      { role: 'assistant', content: JSON.stringify(plan, null, 2), createdAt: now, metadata: { source: 'fallback_response', reason } },
-    ],
-    thoughtDetails: [{ title: 'Fallback path', detail: reason }, ...derivePlanThoughtDetails(plan)],
-    rawResponse: { fallback: true, reason },
-    error: status === 'failed' ? reason : undefined,
+    status: 'failed',
+    messages: [{ role: 'assistant', content: reason, createdAt: now, metadata: { source: 'error' } }],
+    thoughtDetails: [{ title: 'Morning research failed', detail: reason, metadata: { providerWarnings, sourceCount: sources.length } }],
+    rawResponse: { failed: true, providerWarnings, sourceCount: sources.length },
+    error: reason,
   };
 }
 
-function derivePlanThoughtDetails(plan: MorningResearchPlan) {
-  return [
-    ...deriveIdeasThoughtDetails(plan),
-    ...deriveGttThoughtDetails(plan),
-  ];
+async function persistFailedResearchSession(input: { userId: string; tradeDate: string; isDryRun: boolean; model: string; message: string; providerWarnings: string[]; context: BrokerContext; sources: ResearchSource[] }) {
+  const conversation = failedConversation(input.model, input.message, input.providerWarnings, input.sources);
+  const [session] = await db.insert(dailyResearchSessions).values({
+    userId: input.userId,
+    tradeDate: input.tradeDate,
+    status: 'failed',
+    marketThesis: '',
+    sectorBias: [],
+    riskWarnings: [input.message, ...input.providerWarnings],
+    model: input.model,
+    rawPlan: { error: input.message, sourceCount: input.sources.length },
+    agentConversation: conversation as unknown as Record<string, unknown>,
+    isDryRun: input.isDryRun,
+    dryRunStatus: input.isDryRun ? 'failed' : null,
+    dryRunSummary: input.isDryRun ? `Dry run morning research failed: ${input.message}` : '',
+  }).onConflictDoUpdate({
+    target: [dailyResearchSessions.userId, dailyResearchSessions.tradeDate, dailyResearchSessions.isDryRun],
+    set: {
+      status: 'failed',
+      marketThesis: '',
+      sectorBias: [],
+      riskWarnings: [input.message, ...input.providerWarnings],
+      model: input.model,
+      rawPlan: { error: input.message, sourceCount: input.sources.length },
+      agentConversation: conversation as unknown as Record<string, unknown>,
+      dryRunStatus: input.isDryRun ? 'failed' : null,
+      dryRunSummary: input.isDryRun ? `Dry run morning research failed: ${input.message}` : '',
+      dryRunCompletedAt: null,
+      dryRunTotalPnl: '0',
+      updatedAt: new Date(),
+    },
+  }).returning();
+  await Promise.all([
+    db.delete(researchSources).where(eq(researchSources.sessionId, session.id)),
+    db.delete(gttCandidates).where(eq(gttCandidates.sessionId, session.id)),
+    db.delete(watchlistItems).where(and(eq(watchlistItems.userId, input.userId), eq(watchlistItems.tradeDate, input.tradeDate), eq(watchlistItems.source, 'ai'))),
+  ]);
+  return session;
 }
 
 function deriveIdeasThoughtDetails(plan: MorningResearchIdeasPlan) {
@@ -322,42 +409,137 @@ function mergeConversations(model: string, stage1: AgentConversationTrace, stage
   };
 }
 
-function fallbackPlan(context: BrokerContext, sources: ResearchSource[], settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchPlan {
-  const symbols = [...new Set([...context.positions.map((row) => row.tradingsymbol), ...context.holdings.map((row) => row.tradingsymbol), ...DEFAULT_SYMBOLS])].slice(0, settings.maxWatchlistItems);
-  const tradeSymbols = symbols.slice(0, transientTradeCandidateLimit(settings));
-  return {
-    marketThesis: sources.length
-      ? `Review ${sources.length} fresh source(s), but keep execution manual until Phase 4 risk checks are active.`
-      : 'No external research providers were available. Use portfolio context only and avoid automated execution.',
-    sectorBias: [{ sector: 'Broad market', bias: 'neutral', reason: 'Awaiting validated multi-provider research and risk-engine confirmation.' }],
-    watchlist: symbols.map((symbol) => ({ exchange: symbol.includes('NIFTY') ? 'NFO' : 'NSE', tradingsymbol: symbol, bias: 'neutral', reason: 'Carry-forward broker context / benchmark watch item.' })),
-    tradeCandidates: tradeSymbols.map((symbol) => ({ exchange: symbol.includes('NIFTY') ? 'NFO' : 'NSE', tradingsymbol: symbol, side: 'BUY', thesis: 'Deterministic fallback idea from broker context only; requires manual validation.', entryPlan: 'Wait for independently verified evidence and valid price levels before acting.', invalidation: 'Skip if fresh research, liquidity, or risk checks are unavailable.', confidence: 10 })),
-    gttCandidates: [],
-    riskWarnings: ['Automated execution is disabled for research output.', 'Validate every candidate manually until trigger/risk phases are implemented.'],
-  };
-}
+function normalizeIdeasPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchIdeasPlan {
+  const errors: string[] = [];
+  const marketThesis = requiredString(raw.marketThesis, 'marketThesis', errors);
+  const sectorBiasInput = requiredRecordArray(raw.sectorBias, 'sectorBias', errors);
+  const watchlistInput = requiredRecordArray(raw.watchlist, 'watchlist', errors);
+  const tradeCandidatesInput = requiredRecordArray(raw.tradeCandidates, 'tradeCandidates', errors);
+  const riskWarningsInput = requiredArray(raw.riskWarnings, 'riskWarnings', errors);
 
-function fallbackGttPlan(_settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchGttPlan {
-  return { gttCandidates: [] };
-}
+  const sectorBias = sectorBiasInput.slice(0, 8).map((item, index) => ({
+    sector: requiredString(item.sector, `sectorBias[${index}].sector`, errors),
+    bias: requiredEnum(item.bias, `sectorBias[${index}].bias`, ['bullish', 'bearish', 'neutral'] as const, errors),
+    reason: requiredString(item.reason, `sectorBias[${index}].reason`, errors),
+  }));
+  const watchlist = watchlistInput.slice(0, settings.maxWatchlistItems).map((item, index) => ({
+    exchange: requiredExchange(item.exchange, `watchlist[${index}].exchange`, errors),
+    tradingsymbol: requiredSymbol(item.tradingsymbol, `watchlist[${index}].tradingsymbol`, errors),
+    bias: requiredEnum(item.bias, `watchlist[${index}].bias`, ['long', 'short', 'neutral'] as const, errors),
+    reason: requiredString(item.reason, `watchlist[${index}].reason`, errors),
+  }));
+  const tradeCandidates = tradeCandidatesInput.slice(0, transientTradeCandidateLimit(settings)).map((item, index) => ({
+    exchange: requiredExchange(item.exchange, `tradeCandidates[${index}].exchange`, errors),
+    tradingsymbol: requiredSymbol(item.tradingsymbol, `tradeCandidates[${index}].tradingsymbol`, errors),
+    side: requiredEnum(item.side, `tradeCandidates[${index}].side`, ['BUY', 'SELL'] as const, errors),
+    thesis: requiredString(item.thesis, `tradeCandidates[${index}].thesis`, errors),
+    entryPlan: requiredString(item.entryPlan, `tradeCandidates[${index}].entryPlan`, errors),
+    invalidation: requiredString(item.invalidation, `tradeCandidates[${index}].invalidation`, errors),
+    confidence: requiredInt(item.confidence, `tradeCandidates[${index}].confidence`, 0, 100, errors),
+  }));
+  const riskWarnings = riskWarningsInput.map((item, index) => requiredString(item, `riskWarnings[${index}]`, errors)).slice(0, 12);
 
-function normalizeIdeasPlan(raw: Record<string, unknown>, context: BrokerContext, sources: ResearchSource[], settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchIdeasPlan {
-  const fallback = fallbackPlan(context, sources, settings);
-  const sectorBias = arrayValue(raw.sectorBias).slice(0, 8).map((item) => ({ sector: stringValue(item.sector) || 'Market', bias: normalizeSectorBias(item.bias), reason: stringValue(item.reason) || 'No reason supplied.' }));
-  const watchlist = arrayValue(raw.watchlist).slice(0, settings.maxWatchlistItems).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), bias: normalizeBias(item.bias), reason: stringValue(item.reason) || 'LLM watchlist item.' })).filter((item) => item.tradingsymbol);
-  return {
-    marketThesis: stringValue(raw.marketThesis) || fallback.marketThesis,
-    sectorBias: sectorBias.length ? sectorBias : fallback.sectorBias,
-    watchlist: watchlist.length ? watchlist : fallback.watchlist,
-    tradeCandidates: arrayValue(raw.tradeCandidates).slice(0, transientTradeCandidateLimit(settings)).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), side: normalizeSide(item.side), thesis: stringValue(item.thesis) || 'LLM transient trade candidate.', entryPlan: stringValue(item.entryPlan) || 'No entry plan supplied.', invalidation: stringValue(item.invalidation) || 'No invalidation supplied.', confidence: clampInt(Number(item.confidence ?? 0), 0, 100) })).filter((item) => item.tradingsymbol),
-    riskWarnings: arrayValue(raw.riskWarnings).map((item) => String(item)).slice(0, 12),
-  };
+  if (!sectorBias.length) errors.push('sectorBias must contain at least one item');
+  if (!watchlist.length) errors.push('watchlist must contain at least one item');
+  if (errors.length) throw new Error(`Invalid ideas research JSON: ${errors.join('; ')}`);
+  return { marketThesis, sectorBias, watchlist, tradeCandidates, riskWarnings };
 }
 
 function normalizeGttPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchGttPlan {
-  return {
-    gttCandidates: arrayValue(raw.gttCandidates).slice(0, settings.maxGttCandidates).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), transactionType: normalizeSide(item.transactionType), triggerPrice: optionalNumber(item.triggerPrice ?? item.targetPrice), limitPrice: optionalNumber(item.limitPrice ?? item.stopLossPrice), stopLossPrice: optionalNumber(item.stopLossPrice ?? item.stoplossPrice ?? item.stop_loss_price ?? item.limitPrice), targetPrice: optionalNumber(item.targetPrice ?? item.target_price ?? item.target ?? item.triggerPrice), quantity: clampInt(Number(item.quantity ?? 1), 1, 1_000_000), rationale: stringValue(item.rationale) || 'Draft two-leg GTT suggestion.' })).filter((item) => item.tradingsymbol),
-  };
+  const errors: string[] = [];
+  const gttCandidatesInput = requiredRecordArray(raw.gttCandidates, 'gttCandidates', errors);
+  const gttCandidates = gttCandidatesInput.slice(0, settings.maxGttCandidates).map((item, index) => {
+    const targetPrice = requiredPositiveNumber(item.targetPrice, `gttCandidates[${index}].targetPrice`, errors);
+    const stopLossPrice = requiredPositiveNumber(item.stopLossPrice, `gttCandidates[${index}].stopLossPrice`, errors);
+    const transactionType = requiredEnum(item.transactionType, `gttCandidates[${index}].transactionType`, ['BUY', 'SELL'] as const, errors);
+    if (targetPrice !== undefined && stopLossPrice !== undefined) {
+      if (targetPrice === stopLossPrice) errors.push(`gttCandidates[${index}].targetPrice and stopLossPrice must differ`);
+      if (transactionType === 'SELL' && targetPrice <= stopLossPrice) errors.push(`gttCandidates[${index}] SELL exit requires targetPrice above stopLossPrice`);
+      if (transactionType === 'BUY' && targetPrice >= stopLossPrice) errors.push(`gttCandidates[${index}] BUY exit requires targetPrice below stopLossPrice`);
+    }
+    return {
+      exchange: requiredExchange(item.exchange, `gttCandidates[${index}].exchange`, errors),
+      tradingsymbol: requiredSymbol(item.tradingsymbol, `gttCandidates[${index}].tradingsymbol`, errors),
+      transactionType,
+      triggerPrice: optionalPositiveNumberStrict(item.triggerPrice, `gttCandidates[${index}].triggerPrice`, errors),
+      limitPrice: optionalPositiveNumberStrict(item.limitPrice, `gttCandidates[${index}].limitPrice`, errors),
+      targetPrice,
+      stopLossPrice,
+      quantity: requiredInt(item.quantity, `gttCandidates[${index}].quantity`, 1, 1_000_000, errors),
+      rationale: requiredString(item.rationale, `gttCandidates[${index}].rationale`, errors),
+    };
+  });
+  if (errors.length) throw new Error(`Invalid GTT research JSON: ${errors.join('; ')}`);
+  return { gttCandidates };
+}
+
+function requiredArray(value: unknown, path: string, errors: string[]): unknown[] {
+  if (!Array.isArray(value)) {
+    errors.push(`${path} must be an array`);
+    return [];
+  }
+  return value;
+}
+
+function requiredRecordArray(value: unknown, path: string, errors: string[]): Array<Record<string, unknown>> {
+  const items = requiredArray(value, path, errors);
+  const records: Array<Record<string, unknown>> = [];
+  items.forEach((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) errors.push(`${path}[${index}] must be an object`);
+    else records.push(item as Record<string, unknown>);
+  });
+  return records;
+}
+
+function requiredString(value: unknown, path: string, errors: string[]): string {
+  const text = stringValue(value);
+  if (!text) errors.push(`${path} is required`);
+  return text;
+}
+
+function requiredSymbol(value: unknown, path: string, errors: string[]): string {
+  const symbol = requiredString(value, path, errors).toUpperCase();
+  if (symbol && !/^[A-Z0-9 ._-]+$/.test(symbol)) errors.push(`${path} has invalid characters`);
+  return symbol;
+}
+
+function requiredExchange(value: unknown, path: string, errors: string[]): 'NSE' | 'NFO' {
+  return requiredEnum(value, path, ['NSE', 'NFO'] as const, errors);
+}
+
+function requiredEnum<const T extends readonly string[]>(value: unknown, path: string, allowed: T, errors: string[]): T[number] {
+  const text = stringValue(value).toUpperCase();
+  const match = allowed.find((item) => item.toUpperCase() === text);
+  if (!match) errors.push(`${path} must be one of ${allowed.join(', ')}`);
+  return (match ?? allowed[0]) as T[number];
+}
+
+function requiredInt(value: unknown, path: string, min: number, max: number, errors: string[]): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < min || number > max) {
+    errors.push(`${path} must be an integer between ${min} and ${max}`);
+    return min;
+  }
+  return number;
+}
+
+function requiredPositiveNumber(value: unknown, path: string, errors: string[]): number {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) {
+    errors.push(`${path} must be a positive number`);
+    return 0;
+  }
+  return number;
+}
+
+function optionalPositiveNumberStrict(value: unknown, path: string, errors: string[]): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) {
+    errors.push(`${path} must be a positive number when supplied`);
+    return undefined;
+  }
+  return number;
 }
 
 export function indianTradeDate(date = new Date()): string {
@@ -391,27 +573,9 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function arrayValue(value: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => item !== null && typeof item === 'object') : [];
-}
-
 function normalizeBias(value: unknown): 'long' | 'short' | 'neutral' {
   const text = stringValue(value).toLowerCase();
   return text === 'long' || text === 'bullish' ? 'long' : text === 'short' || text === 'bearish' ? 'short' : 'neutral';
-}
-
-function normalizeSectorBias(value: unknown): 'bullish' | 'bearish' | 'neutral' {
-  const text = stringValue(value).toLowerCase();
-  return text === 'bullish' || text === 'bearish' ? text : 'neutral';
-}
-
-function normalizeSide(value: unknown): 'BUY' | 'SELL' {
-  return stringValue(value).toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
-}
-
-function optionalNumber(value: unknown): number | undefined {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
 function clampInt(value: number, min: number, max: number): number {

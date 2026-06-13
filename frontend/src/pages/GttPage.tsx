@@ -47,7 +47,9 @@ export function GttPage() {
 
   const candidates = gtt.data?.candidates ?? [];
   const active = gtt.data?.gttOrders ?? [];
-  const broker = gtt.data?.brokerGtts ?? [];
+  const broker = gtt.data?.brokerGtts;
+  const brokerStatus = gtt.data?.brokerStatus ?? (broker === null ? 'fetch_failed' : 'connected');
+  const brokerUnavailable = broker === null || brokerStatus !== 'connected';
 
   return (
     <div className="page-grid two">
@@ -62,7 +64,13 @@ export function GttPage() {
       </Card>
 
       <Card title="Broker status" marker="[B]" className="wide">
-        {broker.length ? <div className="table-wrap"><table><thead><tr><th>Broker GTT</th><th>Symbol</th><th>Status</th><th>Created</th></tr></thead><tbody>{broker.map((item) => <tr key={item.gttId}><td>{item.gttId}</td><td>{item.exchange ?? '-'}:{item.tradingsymbol ?? '-'}</td><td><StatusBadge status={item.status ?? 'unknown'} /></td><td>{item.createdAt ? new Date(item.createdAt).toLocaleString() : '-'}</td></tr>)}</tbody></table></div> : <EmptyState>No broker GTTs available, or Kite login is not connected.</EmptyState>}
+        {brokerUnavailable ? (
+          <EmptyState>Broker GTT state unavailable: {brokerStatus === 'missing_credentials' ? 'Kite credentials or login are missing.' : 'Broker status fetch failed.'}</EmptyState>
+        ) : broker?.length ? (
+          <div className="table-wrap"><table><thead><tr><th>Broker GTT</th><th>Symbol</th><th>Status</th><th>Created</th></tr></thead><tbody>{broker.map((item) => <tr key={item.gttId}><td>{item.gttId}</td><td>{item.exchange ?? '-'}:{item.tradingsymbol ?? '-'}</td><td><StatusBadge status={item.status ?? 'unknown'} /></td><td>{item.createdAt ? new Date(item.createdAt).toLocaleString() : '-'}</td></tr>)}</tbody></table></div>
+        ) : (
+          <EmptyState>Broker connected; no broker GTTs found.</EmptyState>
+        )}
       </Card>
       {(approve.error || reject.error || cancel.error || revalidate.error) && <ErrorNote error={approve.error ?? reject.error ?? cancel.error ?? revalidate.error} />}
     </div>

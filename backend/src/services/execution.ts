@@ -9,6 +9,9 @@ import { evaluateRisk } from './risk';
 const activeGttStatuses = ['created', 'submitted', 'active', 'open'];
 const staleGttAgeMs = 2 * 24 * 60 * 60 * 1000;
 const maxPriceDriftPct = 5;
+const freshLastPriceMaxAgeMs = 15 * 60 * 1000;
+
+type BrokerGttStatus = 'connected' | 'missing_credentials' | 'fetch_failed';
 
 export async function listGttState(userId: string) {
   const [candidates, active] = await Promise.all([
@@ -16,8 +19,13 @@ export async function listGttState(userId: string) {
     db.select().from(gttOrders).where(eq(gttOrders.userId, userId)).orderBy(desc(gttOrders.createdAt)),
   ]);
   const adapter = await kiteAdapterForUser(userId);
-  const brokerGtts = adapter ? await adapter.getGtts().catch(() => []) : [];
-  return { candidates, gttOrders: active, brokerGtts };
+  if (!adapter) return { candidates, gttOrders: active, brokerGtts: null, brokerStatus: 'missing_credentials' as BrokerGttStatus };
+  try {
+    const brokerGtts = await adapter.getGtts();
+    return { candidates, gttOrders: active, brokerGtts, brokerStatus: 'connected' as BrokerGttStatus };
+  } catch (error) {
+    return { candidates, gttOrders: active, brokerGtts: null, brokerStatus: 'fetch_failed' as BrokerGttStatus, brokerError: error instanceof Error ? error.message : 'Failed to fetch broker GTTs' };
+  }
 }
 
 export async function approveGttCandidate(userId: string, candidateId: string) {
@@ -44,10 +52,10 @@ export async function approveGttCandidate(userId: string, candidateId: string) {
   }, undefined);
   if (risk.decision === 'BLOCK') throw new Error(`GTT blocked by risk engine: ${risk.reasons.join('; ')}`);
 
+  const lastPrice = await getFreshLastPrice(userId, candidate.exchange, candidate.tradingsymbol);
   const adapter = await kiteAdapterForUser(userId);
   if (!adapter) throw new Error('Kite API key and access token are required before GTT placement');
   const account = await upsertKiteBrokerAccount(userId, adapter);
-  const lastPrice = await getLastPrice(userId, candidate.exchange, candidate.tradingsymbol, bracket.capitalReferencePrice);
   const brokerResult = await adapter.createGtt({
     type: 'two-leg',
     exchange: candidate.exchange,
@@ -122,7 +130,8 @@ export async function revalidateGtts(userId: string) {
     const raw = { ...(candidate?.raw ?? {}), ...(gtt.raw ?? {}) } as Record<string, unknown>;
     const latest = await getLastMarketSnapshot(userId, gtt.exchange, gtt.tradingsymbol);
     const triggerPrice = Number(gtt.triggerPrice ?? 0);
-    const lastPrice = Number(latest?.lastPrice ?? 0);
+    const snapshotFresh = isFreshSnapshot(latest);
+    const lastPrice = snapshotFresh ? Number(latest?.lastPrice ?? 0) : 0;
     const reasons: string[] = [];
 
     if (gtt.createdAt < staleBefore) reasons.push('stale_thesis');
@@ -150,7 +159,7 @@ export async function revalidateGtts(userId: string) {
       const [updated] = await db.update(gttOrders).set({
         status: 'revalidation_required',
         statusMessage: autoError ? `Auto-management failed; manual review required: ${autoError}` : `Manual review required: ${reasons.join(', ')}`,
-        raw: { ...gtt.raw, revalidation: { checkedAt: now.toISOString(), reasons, lastPrice: latest?.lastPrice ?? null, autoAllowed, autoError } },
+        raw: { ...gtt.raw, revalidation: { checkedAt: now.toISOString(), reasons, lastPrice: snapshotFresh ? latest?.lastPrice ?? null : null, priceSnapshotStatus: snapshotFresh ? 'fresh' : 'unavailable_or_stale', autoAllowed, autoError } },
         updatedAt: now,
       }).where(eq(gttOrders.id, gtt.id)).returning();
       await audit('gtt.revalidation.flag', { userId, entityType: 'gtt_order', entityId: gtt.id, metadata: { reasons, autoAllowed } });
@@ -158,7 +167,7 @@ export async function revalidateGtts(userId: string) {
     } else {
       const [updated] = await db.update(gttOrders).set({
         statusMessage: 'Revalidated: no blocking drift or expiry detected',
-        raw: { ...gtt.raw, revalidation: { checkedAt: now.toISOString(), reasons: [], lastPrice: latest?.lastPrice ?? null } },
+        raw: { ...gtt.raw, revalidation: { checkedAt: now.toISOString(), reasons: [], lastPrice: snapshotFresh ? latest?.lastPrice ?? null : null, priceSnapshotStatus: snapshotFresh ? 'fresh' : 'unavailable_or_stale' } },
         updatedAt: now,
       }).where(eq(gttOrders.id, gtt.id)).returning();
       results.push({ gttOrder: updated, status: 'ok', reasons: [] });
@@ -196,7 +205,7 @@ async function autoManageRevalidatedGtt(userId: string, gtt: typeof gttOrders.$i
       exchange: modification.exchange ?? gtt.exchange,
       tradingsymbol: modification.tradingsymbol ?? gtt.tradingsymbol,
       triggerValues: [targetPrice, stopLossPrice],
-      lastPrice: Number.isFinite(lastPrice) && lastPrice > 0 ? lastPrice : Math.max(targetPrice, stopLossPrice),
+      lastPrice: requirePositiveLastPrice(lastPrice),
       orders: [
         {
           exchange: modification.exchange ?? gtt.exchange,
@@ -282,10 +291,21 @@ async function findExistingGtt(userId: string, idempotencyKey: string) {
   return existing ?? null;
 }
 
-async function getLastPrice(userId: string, exchange: string, tradingsymbol: string, fallback: number) {
+async function getFreshLastPrice(userId: string, exchange: string, tradingsymbol: string) {
   const snapshot = await getLastMarketSnapshot(userId, exchange, tradingsymbol);
-  const price = Number(snapshot?.lastPrice ?? fallback);
-  return Number.isFinite(price) && price > 0 ? price : fallback;
+  if (!isFreshSnapshot(snapshot)) throw new Error('Fresh last price required before Kite GTT placement');
+  return requirePositiveLastPrice(Number(snapshot?.lastPrice));
+}
+
+function requirePositiveLastPrice(price: number) {
+  if (!Number.isFinite(price) || price <= 0) throw new Error('Fresh last price required before Kite GTT placement');
+  return price;
+}
+
+function isFreshSnapshot(snapshot: typeof marketSnapshots.$inferSelect | null) {
+  if (!snapshot) return false;
+  const price = Number(snapshot.lastPrice);
+  return Number.isFinite(price) && price > 0 && Date.now() - snapshot.capturedAt.getTime() <= freshLastPriceMaxAgeMs;
 }
 
 async function getLastMarketSnapshot(userId: string, exchange: string, tradingsymbol: string) {

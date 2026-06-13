@@ -50,10 +50,17 @@ export async function runDryRunMorning(userId: string): Promise<DryRunBundle> {
   await db.delete(orders).where(and(eq(orders.userId, userId), eq(orders.researchSessionId, research.session.id), eq(orders.isDryRun, true)));
 
   const candidates = candidatesForDryRun(research);
+  const skipped: Array<{ id: string; symbol: string; reason: string }> = [];
+  let tracked = 0;
   for (const candidate of candidates) {
     const latestPrice = await latestMarketPrice(userId, candidate.exchange, candidate.tradingsymbol);
-    const entryPrice = latestPrice || numeric(candidate.triggerPrice) || numeric(candidate.limitPrice) || 0;
-    const pnl = markToMarket(candidate.transactionType, candidate.quantity, entryPrice, latestPrice || entryPrice);
+    if (!latestPrice) {
+      skipped.push({ id: candidate.id, symbol: `${candidate.exchange}:${candidate.tradingsymbol}`, reason: 'latest_market_price_unavailable' });
+      await db.update(gttCandidates).set({ status: 'dry_run_waiting_for_market_data', updatedAt: new Date() }).where(eq(gttCandidates.id, candidate.id));
+      continue;
+    }
+    const entryPrice = latestPrice;
+    const pnl = markToMarket(candidate.transactionType, candidate.quantity, entryPrice, latestPrice);
     await db.insert(orders).values({
       userId,
       exchange: candidate.exchange,
@@ -64,19 +71,22 @@ export async function runDryRunMorning(userId: string): Promise<DryRunBundle> {
       quantity: String(candidate.quantity),
       filledQuantity: String(candidate.quantity),
       averagePrice: String(entryPrice),
-      currentPrice: String(latestPrice || entryPrice),
+      currentPrice: String(latestPrice),
       pnl: String(pnl),
-      status: entryPrice > 0 ? 'dry_run_active' : 'dry_run_tracking_no_price',
+      status: 'dry_run_active',
       statusMessage: candidate.rationale,
-      raw: candidate.raw,
+      raw: { ...candidate.raw, dryRun: { brokerPlacement: 'skipped', entryPriceSource: 'latest_market_snapshot' } },
       isDryRun: true,
       researchSessionId: research.session.id,
       gttCandidateId: candidate.id,
       placedAt: new Date(),
     });
+    tracked += 1;
   }
 
-  await audit('dry_run.morning.start', { userId, entityType: 'daily_research_session', entityId: research.session.id, metadata: { tradeDate, candidates: candidates.length } });
+  const dryRunSummary = `Dry run research completed; ${tracked} simulated order(s) are tracking without broker placement${skipped.length ? `; ${skipped.length} candidate(s) waiting for market price.` : '.'}`;
+  await db.update(dailyResearchSessions).set({ dryRunSummary, updatedAt: new Date() }).where(eq(dailyResearchSessions.id, research.session.id));
+  await audit('dry_run.morning.start', { userId, entityType: 'daily_research_session', entityId: research.session.id, metadata: { tradeDate, candidates: candidates.length, tracked, skipped } });
   return getDryRunByDate(userId, tradeDate) as Promise<DryRunBundle>;
 }
 
@@ -208,11 +218,6 @@ function tradeDateStartUtc(tradeDate: string): Date {
 async function latestMarketPrice(userId: string, exchange: string, tradingsymbol: string): Promise<number> {
   const [snapshot] = await db.select().from(marketSnapshots).where(and(eq(marketSnapshots.userId, userId), eq(marketSnapshots.exchange, exchange), eq(marketSnapshots.tradingsymbol, tradingsymbol))).orderBy(desc(marketSnapshots.capturedAt)).limit(1);
   return Number(snapshot?.lastPrice ?? 0) || 0;
-}
-
-function numeric(value: string | number | null | undefined): number {
-  const number = Number(value ?? 0);
-  return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
 function markToMarket(side: string, quantity: number, entryPrice: number, currentPrice: number): number {

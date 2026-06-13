@@ -16,6 +16,8 @@ App triggers are internal workflow automations only. They must never directly ca
 
 The MVP is designed for Indian equities only, but the architecture must support future expansion to other brokers, asset classes, and global markets.
 
+Failure and safety behavior is documented in [`docs/fallbacks.md`](./fallbacks.md). The guiding rule is that missing data, unavailable providers, or malformed model output must be explicit setup errors, runtime failures, unavailable states, or hard safety gates rather than silent fallback output.
+
 ---
 
 ## 2. Product Mode

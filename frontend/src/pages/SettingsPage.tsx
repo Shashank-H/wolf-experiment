@@ -143,8 +143,8 @@ export function SettingsPage() {
           <form onSubmit={saveProviders} className="stack" autoComplete="off">
             <input className="autofill-decoy" type="text" name="username" autoComplete="username" tabIndex={-1} aria-hidden="true" />
             <input className="autofill-decoy" type="password" name="password" autoComplete="current-password" tabIndex={-1} aria-hidden="true" />
-            <Field label="Exa API key" info="Used for web/news research source discovery. Stored encrypted."><input name="exaApiKey" type="password" placeholder={savedPlaceholder('exa')} autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" /></Field>
-            <Field label="Finnhub API key" info="Used for market/news data where available. Stored encrypted."><input name="finnhubApiKey" type="password" placeholder={savedPlaceholder('finnhub')} autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" /></Field>
+            <Field label="Exa API key" info="Research source provider for web/news discovery. Configure Exa or Finnhub before morning research can run. Stored encrypted."><input name="exaApiKey" type="password" placeholder={savedPlaceholder('exa')} autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" /></Field>
+            <Field label="Finnhub API key" info="Research source provider for market/news data. Configure Finnhub or Exa before morning research can run. Stored encrypted."><input name="finnhubApiKey" type="password" placeholder={savedPlaceholder('finnhub')} autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" /></Field>
             <button disabled={settings.isLoading}>Save data keys</button>
           </form>
         </Card>
@@ -154,7 +154,7 @@ export function SettingsPage() {
             <input className="autofill-decoy" type="text" name="username" autoComplete="username" tabIndex={-1} aria-hidden="true" />
             <input className="autofill-decoy" type="password" name="password" autoComplete="current-password" tabIndex={-1} aria-hidden="true" />
             <Field label="LLM base URL" info="OpenAI-compatible API base URL. Leave blank for provider default."><input value={providers.llmBaseUrl} onChange={(e) => setProviders({ ...providers, llmBaseUrl: e.target.value })} name="llmBaseUrl" autoComplete="off" data-lpignore="true" data-1p-ignore="true" /></Field>
-            <Field label="LLM API key" info="Model provider API key used for morning research. Stored encrypted."><input name="llmApiKey" type="password" placeholder={savedPlaceholder('llm')} autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" /></Field>
+            <Field label="LLM API key" info="Required model provider API key for morning research. Stored encrypted."><input name="llmApiKey" type="password" placeholder={savedPlaceholder('llm')} autoComplete="new-password" data-lpignore="true" data-1p-ignore="true" /></Field>
             <div className="field-grid three-fields">
               <Field label="Small" info="Fast/cheap model for simple extraction."><input value={providers.smallModel} onChange={(e) => setProviders({ ...providers, smallModel: e.target.value })} name="smallModel" autoComplete="off" /></Field>
               <Field label="Medium" info="Balanced model for most research tasks."><input value={providers.mediumModel} onChange={(e) => setProviders({ ...providers, mediumModel: e.target.value })} name="mediumModel" autoComplete="off" /></Field>

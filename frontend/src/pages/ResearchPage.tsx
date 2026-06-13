@@ -1,10 +1,11 @@
+import { Link } from '@tanstack/react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Card, EmptyState, ErrorNote, Field, SkeletonRows, StatusBadge } from '../components/ui';
 import { api } from '../lib/api';
 import { formatMoney } from '../lib/format';
 import { queryClient } from '../queryClient';
-import type { ResearchBundle, ResearchResponse, WatchlistResponse } from '../types';
+import type { ResearchBundle, ResearchResponse, SettingsResponse, WatchlistResponse } from '../types';
 
 type ResearchDrawerTab = 'overview' | 'agent' | 'gtt' | 'sources';
 
@@ -13,6 +14,7 @@ export function ResearchPage() {
   const [reason, setReason] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState<ResearchDrawerTab>('overview');
+  const settings = useQuery({ queryKey: ['settings'], queryFn: () => api<SettingsResponse>('/settings') });
   const research = useQuery({ queryKey: ['research', 'today'], queryFn: () => api<ResearchResponse>('/research/today') });
   const watchlist = useQuery({ queryKey: ['watchlist', 'today'], queryFn: () => api<WatchlistResponse>('/watchlist/today') });
   const runMorning = useMutation({
@@ -40,6 +42,13 @@ export function ResearchPage() {
   const bundle = research.data?.research;
   const activeWatchlist = watchlist.data?.watchlist ?? bundle?.watchlist ?? [];
   const warningsCount = bundle?.session.riskWarnings.length ?? 0;
+  const providerKeys = settings.data?.providerKeys ?? [];
+  const hasKey = (provider: string, label?: string) => providerKeys.some((key) => key.provider === provider && (!label || key.label === label));
+  const researchSetupIssues = [
+    !hasKey('llm') ? 'LLM API key is required before morning research can run.' : null,
+    !hasKey('exa') && !hasKey('finnhub') ? 'Configure Exa or Finnhub before morning research can run.' : null,
+  ].filter(Boolean);
+  const researchSetupBlocked = researchSetupIssues.length > 0;
 
   function openDrawer(tab: ResearchDrawerTab) {
     setDrawerTab(tab);
@@ -50,8 +59,14 @@ export function ResearchPage() {
     <div className="page-stack research-page">
       <div className="page-actions split-actions">
         <button className="secondary" onClick={() => openDrawer('overview')} disabled={!bundle}>Deep dive</button>
-        <button onClick={() => runMorning.mutate()} disabled={runMorning.isPending}>{runMorning.isPending ? 'Running…' : 'Run morning research'}</button>
+        <button onClick={() => runMorning.mutate()} disabled={runMorning.isPending || researchSetupBlocked} title={researchSetupBlocked ? researchSetupIssues.join(' ') : undefined}>{runMorning.isPending ? 'Running…' : 'Run morning research'}</button>
       </div>
+      {researchSetupBlocked && (
+        <Card title="Research setup required" marker="[!]">
+          <ul className="plain-list">{researchSetupIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>
+          <Link to="/settings" className="button-link">Configure research providers</Link>
+        </Card>
+      )}
       {research.isLoading ? <SkeletonRows /> : research.isError ? <ErrorNote error={research.error} /> : null}
       {runMorning.isError && <ErrorNote error={runMorning.error} />}
       {!bundle && !research.isLoading ? <EmptyState>No morning research session yet. Run research to create today&apos;s thesis, watchlist, agent log and GTT drafts.</EmptyState> : null}
