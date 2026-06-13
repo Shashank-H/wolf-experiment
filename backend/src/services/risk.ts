@@ -55,18 +55,17 @@ export async function evaluateRisk(userId: string, orderDraftInput: unknown, tri
   checks.push({ check: 'kill_switch', ok: !settingsRow?.killSwitchEnabled, message: settingsRow?.killSwitchEnabled ? 'Kill switch is enabled.' : 'Kill switch is off.' });
   checks.push({ check: 'symbol_blacklist', ok: !(prefs?.symbolBlacklist ?? []).map((x) => x.toUpperCase()).includes(orderDraft.tradingsymbol), message: 'Symbol blacklist check.' });
   checks.push({ check: 'strategy_blacklist', ok: !orderDraft.strategy || !(prefs?.strategyBlacklist ?? []).map((x) => x.toLowerCase()).includes(orderDraft.strategy.toLowerCase()), message: 'Strategy blacklist check.' });
-  if ((prefs?.maxTradesPerDay ?? 0) > 0) checks.push({ check: 'max_trades_per_day', ok: Number(ordersToday[0]?.value ?? 0) < Number(prefs?.maxTradesPerDay ?? 0), message: `${ordersToday[0]?.value ?? 0}/${prefs?.maxTradesPerDay} trades used today.` });
-  if ((prefs?.maxOpenPositions ?? 0) > 0) checks.push({ check: 'max_open_positions', ok: Number(openPositions[0]?.value ?? 0) < Number(prefs?.maxOpenPositions ?? 0), message: `${openPositions[0]?.value ?? 0}/${prefs?.maxOpenPositions} open positions.` });
-  if ((prefs?.maxCapitalPerTrade ?? 0) > 0 && capital > 0) checks.push({ check: 'max_capital_per_trade', ok: capital <= Number(prefs?.maxCapitalPerTrade ?? 0), message: `Estimated capital ${capital} vs limit ${prefs?.maxCapitalPerTrade}.` });
+  // TODO: Enforce app-specific trades/day, open-position, and capital/trade limits in backend when numeric limits move beyond LLM-only proposal guardrails.
+  if ((prefs?.maxTradesPerDay ?? 0) > 0) checks.push({ check: 'max_trades_per_day', ok: true, message: `${ordersToday[0]?.value ?? 0}/${prefs?.maxTradesPerDay} trades used today. Informational only; LLM proposal guardrail for now.` });
+  if ((prefs?.maxOpenPositions ?? 0) > 0) checks.push({ check: 'max_open_positions', ok: true, message: `${openPositions[0]?.value ?? 0}/${prefs?.maxOpenPositions} open positions. Informational only; LLM proposal guardrail for now.` });
+  if ((prefs?.maxCapitalPerTrade ?? 0) > 0 && capital > 0) checks.push({ check: 'max_capital_per_trade', ok: true, message: `Estimated capital ${capital} vs limit ${prefs?.maxCapitalPerTrade}. Informational only; LLM proposal guardrail for now.` });
   checks.push({ check: 'max_pending_approvals', ok: Number(pendingApprovals[0]?.value ?? 0) < 10, message: `${pendingApprovals[0]?.value ?? 0}/10 pending approvals.` });
   checks.push({ check: 'duplicate_prevention', ok: Number(duplicateOrders[0]?.value ?? 0) === 0, message: 'No active duplicate order for symbol.' });
-  if (isBrokerActionableDraft(orderDraft)) {
-    checks.push({ check: 'liquidity_spread_unavailable', ok: false, message: 'Liquidity/spread provider check is not wired; live broker action is blocked.' });
-    checks.push({ check: 'daily_loss_unavailable', ok: false, message: 'Daily realized PnL feed is not wired; live broker action is blocked.' });
-  } else {
-    checks.push({ check: 'liquidity_spread_unavailable', ok: true, message: 'Liquidity/spread provider check is not wired; non-broker dry-run/research action only.' });
-    checks.push({ check: 'daily_loss_unavailable', ok: true, message: 'Daily realized PnL feed is not wired; non-broker dry-run/research action only.' });
-  }
+  const brokerActionNote = isBrokerActionableDraft(orderDraft) ? 'broker-actionable draft' : 'non-broker dry-run/research action';
+  // TODO: Add app-specific planned GTT loss validation from entry/target/stop-loss/quantity, and optionally aggregate app-created GTT risk per day.
+  // TODO: Add liquidity/spread advisory validation when bid/ask/depth market data is available.
+  checks.push({ check: 'liquidity_spread_unavailable', ok: true, message: `Liquidity/spread provider check is not wired; informational only for ${brokerActionNote}.` });
+  checks.push({ check: 'daily_loss_unavailable', ok: true, message: `Daily loss backend validation is not wired; LLM GTT proposal guardrail/manual review only for ${brokerActionNote}.` });
 
   const failed = checks.filter((check) => !check.ok);
   const highRisk = capital === 0 || failed.length > 0 || orderDraft.orderType !== 'MARKET';

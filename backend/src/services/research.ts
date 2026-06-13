@@ -1,11 +1,11 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { apiKeys, dailyResearchSessions, gttCandidates, holdingsSnapshots, positions, rcaReports, researchSources, userSettings, watchlistItems } from '../db/schema';
+import { apiKeys, dailyResearchSessions, gttCandidates, holdingsSnapshots, positions, rcaReports, researchSources, tradingPreferences, userSettings, watchlistItems } from '../db/schema';
 import { ExaProvider } from '../providers/research/ExaProvider';
 import { FinnhubProvider } from '../providers/research/FinnhubProvider';
 import { OpenAiCompatibleProvider } from '../providers/research/OpenAiCompatibleProvider';
-import { DEFAULT_MORNING_RESEARCH_SETTINGS, buildMorningResearchGttMessages, buildMorningResearchIdeasMessages, transientTradeCandidateLimit } from '../prompts/morning-research';
-import type { MorningResearchSettings, ResearchRiskTolerance } from '../prompts/morning-research';
+import { DEFAULT_MORNING_RESEARCH_SETTINGS, DEFAULT_TRADING_RISK_SETTINGS, buildMorningResearchGttMessages, buildMorningResearchIdeasMessages, transientTradeCandidateLimit } from '../prompts/morning-research';
+import type { MorningResearchSettings, ResearchRiskTolerance, TradingRiskSettings } from '../prompts/morning-research';
 import type { AgentConversationTrace, LlmMessage, MorningResearchGttPlan, MorningResearchIdeasPlan, MorningResearchPlan, ResearchSource } from '../providers/research/types';
 import { audit } from '../utils/audit';
 import { decryptSecret } from '../utils/crypto';
@@ -28,14 +28,16 @@ const DEFAULT_SYMBOLS = ['NIFTY 50', 'BANKNIFTY', 'RELIANCE', 'HDFCBANK', 'INFY'
 export async function runMorningResearch(userId: string, options: { dryRun?: boolean } = {}): Promise<MorningResearchResult> {
   const tradeDate = indianTradeDate();
   const isDryRun = Boolean(options.dryRun);
-  const [context, settings, secrets, rcaLearnings] = await Promise.all([
+  const [context, settings, preferences, secrets, rcaLearnings] = await Promise.all([
     loadBrokerContext(userId),
     db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1),
+    db.select().from(tradingPreferences).where(eq(tradingPreferences.userId, userId)).limit(1),
     loadSecrets(userId),
     loadRcaLearnings(userId),
   ]);
   const providerConfig = settings[0]?.providerConfig ?? {};
   const researchSettings = parseResearchSettings(providerConfig);
+  const tradingRiskSettings = parseTradingRiskSettings(preferences[0]);
   const providerWarnings: string[] = [];
   const symbols = [...new Set([...context.holdings.map((row) => row.tradingsymbol), ...context.positions.map((row) => row.tradingsymbol), ...DEFAULT_SYMBOLS])].slice(0, 16);
   const model = typeof providerConfig.mediumModel === 'string' && providerConfig.mediumModel.trim() ? providerConfig.mediumModel.trim() : 'gpt-4o-mini';
@@ -46,7 +48,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
   let conversation: AgentConversationTrace;
   try {
     if (!sources.length) throw new Error(`Morning research requires at least one successful external source: ${sourceErrors.join('; ') || 'no sources returned'}`);
-    ({ plan, conversation } = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, rcaLearnings }));
+    ({ plan, conversation } = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, tradingRiskSettings, rcaLearnings }));
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Morning research failed';
     const session = await persistFailedResearchSession({ userId, tradeDate, isDryRun, model, message, providerWarnings, context, sources });
@@ -244,11 +246,11 @@ async function collectSources(symbols: string[], secrets: Awaited<ReturnType<typ
   return { sources: sources.slice(0, 24), errors };
 }
 
-async function buildPlan(input: { context: BrokerContext; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings; rcaLearnings: Awaited<ReturnType<typeof loadRcaLearnings>> }): Promise<{ plan: MorningResearchPlan; conversation: AgentConversationTrace }> {
+async function buildPlan(input: { context: BrokerContext; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings; tradingRiskSettings: TradingRiskSettings; rcaLearnings: Awaited<ReturnType<typeof loadRcaLearnings>> }): Promise<{ plan: MorningResearchPlan; conversation: AgentConversationTrace }> {
   if (!input.llmApiKey) throw new Error('LLM API key is required before morning research can start');
   const llm = new OpenAiCompatibleProvider(input.llmApiKey, input.llmBaseUrl);
 
-  const ideasMessages = buildMorningResearchIdeasMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings });
+  const ideasMessages = buildMorningResearchIdeasMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, tradingRisk: input.tradingRiskSettings, rcaLearnings: input.rcaLearnings });
   const ideasResult = await generateValidatedJsonWithRetry({
     llm,
     model: input.model,
@@ -260,7 +262,7 @@ async function buildPlan(input: { context: BrokerContext; sources: ResearchSourc
   const ideasPlan = ideasResult.value;
   const ideasConversation = { ...ideasResult.conversation, thoughtDetails: [...ideasResult.conversation.thoughtDetails, ...deriveIdeasThoughtDetails(ideasPlan)] };
 
-  const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings, ideasPlan: ideasPlan as unknown as Record<string, unknown> });
+  const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, tradingRisk: input.tradingRiskSettings, rcaLearnings: input.rcaLearnings, ideasPlan: ideasPlan as unknown as Record<string, unknown> });
   const gttResult = await generateValidatedJsonWithRetry({
     llm,
     model: input.model,
@@ -556,6 +558,15 @@ function parseResearchSettings(config: Record<string, unknown>): MorningResearch
     maxWatchlistItems: configInt(config.maxWatchlistItems, DEFAULT_MORNING_RESEARCH_SETTINGS.maxWatchlistItems, 0, 24),
     maxGttCandidates: configInt(config.maxGttCandidates, DEFAULT_MORNING_RESEARCH_SETTINGS.maxGttCandidates, 0, 12),
     riskTolerance: normalizeRiskTolerance(config.riskTolerance),
+  };
+}
+
+function parseTradingRiskSettings(preferences?: { maxDailyLoss?: unknown; maxTradesPerDay?: unknown; maxCapitalPerTrade?: unknown; maxOpenPositions?: unknown }): TradingRiskSettings {
+  return {
+    maxDailyLoss: configInt(preferences?.maxDailyLoss, DEFAULT_TRADING_RISK_SETTINGS.maxDailyLoss, 0, Number.MAX_SAFE_INTEGER),
+    maxTradesPerDay: configInt(preferences?.maxTradesPerDay, DEFAULT_TRADING_RISK_SETTINGS.maxTradesPerDay, 0, Number.MAX_SAFE_INTEGER),
+    maxCapitalPerTrade: configInt(preferences?.maxCapitalPerTrade, DEFAULT_TRADING_RISK_SETTINGS.maxCapitalPerTrade, 0, Number.MAX_SAFE_INTEGER),
+    maxOpenPositions: configInt(preferences?.maxOpenPositions, DEFAULT_TRADING_RISK_SETTINGS.maxOpenPositions, 0, Number.MAX_SAFE_INTEGER),
   };
 }
 
