@@ -15,7 +15,6 @@ const DEFAULT_RISK_LIMITS = {
 
 const DEFAULT_RESEARCH = {
   maxWatchlistItems: '6',
-  maxTradeCandidates: '4',
   maxGttCandidates: '3',
   riskTolerance: 'conservative',
 };
@@ -52,7 +51,6 @@ export function TradingSettingsPage() {
     });
     setResearch({
       maxWatchlistItems: String(config.maxWatchlistItems ?? DEFAULT_RESEARCH.maxWatchlistItems),
-      maxTradeCandidates: String(config.maxTradeCandidates ?? DEFAULT_RESEARCH.maxTradeCandidates),
       maxGttCandidates: String(config.maxGttCandidates ?? DEFAULT_RESEARCH.maxGttCandidates),
       riskTolerance: String(config.riskTolerance ?? DEFAULT_RESEARCH.riskTolerance),
     });
@@ -136,7 +134,7 @@ export function TradingSettingsPage() {
   async function saveResearch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      await api('/settings/research', { method: 'PUT', body: JSON.stringify({ maxWatchlistItems: Number(research.maxWatchlistItems), maxTradeCandidates: Number(research.maxTradeCandidates), maxGttCandidates: Number(research.maxGttCandidates), riskTolerance: research.riskTolerance }) });
+      await api('/settings/research', { method: 'PUT', body: JSON.stringify({ maxWatchlistItems: Number(research.maxWatchlistItems), maxGttCandidates: Number(research.maxGttCandidates), riskTolerance: research.riskTolerance }) });
       await queryClient.invalidateQueries({ queryKey: ['settings'] });
       setMessage('Research settings saved');
     } catch (error) {
@@ -199,7 +197,6 @@ export function TradingSettingsPage() {
           <form onSubmit={saveResearch} className="stack" autoComplete="off">
             <div className="field-grid three-fields">
               <Field label="Watchlist items" info="Maximum symbols shown in morning research. Default 6."><input value={research.maxWatchlistItems} onChange={(e) => setResearch({ ...research, maxWatchlistItems: e.target.value })} name="maxWatchlistItems" type="number" min="0" max="24" autoComplete="off" /></Field>
-              <Field label="Trade candidates" info="Maximum actionable trade ideas generated for manual review. Default 4."><input value={research.maxTradeCandidates} onChange={(e) => setResearch({ ...research, maxTradeCandidates: e.target.value })} name="maxTradeCandidates" type="number" min="0" max="12" autoComplete="off" /></Field>
               <Field label="GTT candidates" info="Maximum draft GTT orders generated for review. Default 3."><input value={research.maxGttCandidates} onChange={(e) => setResearch({ ...research, maxGttCandidates: e.target.value })} name="maxGttCandidates" type="number" min="0" max="12" autoComplete="off" /></Field>
             </div>
             <Field label="Risk style" info="Controls how strict the research prompt is when selecting ideas.">
@@ -209,7 +206,7 @@ export function TradingSettingsPage() {
                 <option value="aggressive">Opportunity mode — more ideas for review</option>
               </select>
             </Field>
-            <p className="note">Research limits are enforced in both the prompt and server-side cleanup.</p>
+            <p className="note">GTT limits are enforced in Stage 2. Stage 1 trade ideas are transient and visible only through the agent log.</p>
             <button disabled={settings.isLoading}>Save research</button>
           </form>
         </Card>

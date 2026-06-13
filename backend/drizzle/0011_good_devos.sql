@@ -1,0 +1,1 @@
+ALTER TABLE "daily_research_sessions" ADD COLUMN "agent_conversation" jsonb DEFAULT '{}'::jsonb NOT NULL;

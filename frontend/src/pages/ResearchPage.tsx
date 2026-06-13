@@ -6,7 +6,7 @@ import { formatMoney } from '../lib/format';
 import { queryClient } from '../queryClient';
 import type { ResearchBundle, ResearchResponse, WatchlistResponse } from '../types';
 
-type ResearchDrawerTab = 'overview' | 'trades' | 'gtt' | 'sources';
+type ResearchDrawerTab = 'overview' | 'agent' | 'gtt' | 'sources';
 
 export function ResearchPage() {
   const [symbol, setSymbol] = useState('');
@@ -54,7 +54,7 @@ export function ResearchPage() {
       </div>
       {research.isLoading ? <SkeletonRows /> : research.isError ? <ErrorNote error={research.error} /> : null}
       {runMorning.isError && <ErrorNote error={runMorning.error} />}
-      {!bundle && !research.isLoading ? <EmptyState>No morning research session yet. Run research to create today&apos;s thesis, watchlist, candidates and GTT drafts.</EmptyState> : null}
+      {!bundle && !research.isLoading ? <EmptyState>No morning research session yet. Run research to create today&apos;s thesis, watchlist, agent log and GTT drafts.</EmptyState> : null}
 
       {bundle ? (
         <>
@@ -66,7 +66,7 @@ export function ResearchPage() {
             </div>
             <div className="research-stats">
               <button className="stat-button" onClick={() => openDrawer('overview')}><span>{activeWatchlist.length}</span>Watchlist</button>
-              <button className="stat-button" onClick={() => openDrawer('trades')}><span>{bundle.tradeCandidates.length}</span>Trades</button>
+              <button className="stat-button" onClick={() => openDrawer('agent')}><span>{bundle.session.agentConversation?.messages?.length ?? 0}</span>Agent log</button>
               <button className="stat-button" onClick={() => openDrawer('gtt')}><span>{bundle.gttCandidates.length}</span>GTT</button>
               <button className={warningsCount ? 'stat-button warning' : 'stat-button'} onClick={() => openDrawer('overview')}><span>{warningsCount}</span>Warnings</button>
             </div>
@@ -78,13 +78,13 @@ export function ResearchPage() {
               {activeWatchlist.length > 8 && <button className="secondary tiny" onClick={() => openDrawer('overview')}>View all {activeWatchlist.length}</button>}
             </Card>
 
-            <Card title="Highest conviction" marker="[T]" className="research-card">
-              {bundle.tradeCandidates.length ? bundle.tradeCandidates.slice(0, 3).map((item) => (
-                <button className="candidate-row" key={item.id} onClick={() => openDrawer('trades')}>
-                  <span><strong>{item.tradingsymbol}</strong><small>{item.side} · {item.confidence}% confidence</small></span>
-                  <em>{item.thesis}</em>
+            <Card title="Draft GTT candidates" marker="[G]" className="research-card">
+              {bundle.gttCandidates.length ? bundle.gttCandidates.slice(0, 3).map((item) => (
+                <button className="candidate-row" key={item.id} onClick={() => openDrawer('gtt')}>
+                  <span><strong>{item.tradingsymbol}</strong><small>{item.transactionType} · qty {item.quantity}</small></span>
+                  <em>{item.rationale}</em>
                 </button>
-              )) : <EmptyState>No trade candidates generated.</EmptyState>}
+              )) : <EmptyState>No GTT drafts generated.</EmptyState>}
             </Card>
           </section>
         </>
@@ -114,7 +114,7 @@ function ResearchDrawer({ bundle, activeWatchlist, open, tab, onTab, onClose, on
           <button className="secondary tiny" onClick={onClose}>Close</button>
         </div>
         <div className="drawer-tabs">
-          {(['overview', 'trades', 'gtt', 'sources'] as const).map((item) => <button key={item} className={tab === item ? 'active' : ''} onClick={() => onTab(item)}>{item}</button>)}
+          {(['overview', 'agent', 'gtt', 'sources'] as const).map((item) => <button key={item} className={tab === item ? 'active' : ''} onClick={() => onTab(item)}>{item}</button>)}
         </div>
 
         {tab === 'overview' && (
@@ -128,12 +128,57 @@ function ResearchDrawer({ bundle, activeWatchlist, open, tab, onTab, onClose, on
           </div>
         )}
 
-        {tab === 'trades' && <div className="drawer-section">{bundle.tradeCandidates.length ? bundle.tradeCandidates.map((item) => <div className="detail-block" key={item.id}><strong>{item.exchange}:{item.tradingsymbol} · {item.side} · {item.confidence}%</strong><p>{item.thesis}</p><p className="note">Entry: {item.entryPlan}</p><p className="note">Invalidation: {item.invalidation}</p></div>) : <EmptyState>No trade candidates generated.</EmptyState>}</div>}
+        {tab === 'agent' && <AgentConversationView bundle={bundle} />}
 
         {tab === 'gtt' && <div className="drawer-section">{bundle.gttCandidates.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Exit</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Rationale</th></tr></thead><tbody>{bundle.gttCandidates.map((item) => <tr key={item.id}><td><strong>{item.exchange}:{item.tradingsymbol}</strong></td><td>{item.transactionType}</td><td>{formatMoney(item.targetPrice ?? item.triggerPrice)}</td><td>{formatMoney(item.stopLossPrice ?? item.limitPrice)}</td><td>{item.quantity}</td><td><StatusBadge status={item.status} /></td><td>{item.rationale}</td></tr>)}</tbody></table></div> : <EmptyState>No GTT drafts generated.</EmptyState>}</div>}
 
         {tab === 'sources' && <div className="drawer-section">{bundle.sources.length ? <ul className="plain-list source-list">{bundle.sources.map((source) => <li key={source.id}><strong>{source.provider}</strong> {source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a> : source.title}<br /><span className="note">{source.summary}</span></li>)}</ul> : <EmptyState>No external sources saved.</EmptyState>}</div>}
       </aside>
     </>
+  );
+}
+
+function AgentConversationView({ bundle }: { bundle: ResearchBundle }) {
+  const conversation = bundle.session.agentConversation;
+  const messages = conversation?.messages ?? [];
+  const thoughts = conversation?.thoughtDetails ?? [];
+  if (!conversation || (!messages.length && !thoughts.length)) return <div className="drawer-section"><EmptyState>No stored agent conversation for this research run.</EmptyState></div>;
+  return (
+    <div className="drawer-section agent-deep-dive">
+      <div className="llm-run-card">
+        <div>
+          <p className="eyebrow">Agent run</p>
+          <h2>{conversation.provider ?? 'agent'} · {conversation.model ?? bundle.session.model ?? 'unknown model'}</h2>
+        </div>
+        <StatusBadge status={conversation.status ?? 'stored'} />
+        {conversation.startedAt && <span className="note">{new Date(conversation.startedAt).toLocaleString()}</span>}
+      </div>
+
+      {thoughts.length ? (
+        <section className="thought-stream" aria-label="Thought details">
+          <div className="section-kicker"><span />Thought details</div>
+          {thoughts.map((thought, index) => (
+            <article className="thought-card" key={`${thought.title}-${index}`}>
+              <div className="thought-index">{String(index + 1).padStart(2, '0')}</div>
+              <div>
+                <h3>{thought.title}</h3>
+                <p>{thought.detail}</p>
+                {thought.metadata && Object.keys(thought.metadata).length ? <code>{JSON.stringify(thought.metadata)}</code> : null}
+              </div>
+            </article>
+          ))}
+        </section>
+      ) : null}
+
+      <section className="chat-transcript" aria-label="Full agent conversation">
+        <div className="section-kicker"><span />Full conversation</div>
+        {messages.map((message, index) => (
+          <article className={`chat-bubble ${message.role}`} key={`${message.role}-${index}`}>
+            <div className="chat-role"><strong>{message.role}</strong>{message.createdAt && <small>{new Date(message.createdAt).toLocaleTimeString()}</small>}</div>
+            <pre>{message.content}</pre>
+          </article>
+        ))}
+      </section>
+    </div>
   );
 }

@@ -4,14 +4,12 @@ export type ResearchRiskTolerance = 'conservative' | 'moderate' | 'aggressive';
 
 export type MorningResearchSettings = {
   maxWatchlistItems: number;
-  maxTradeCandidates: number;
   maxGttCandidates: number;
   riskTolerance: ResearchRiskTolerance;
 };
 
 export const DEFAULT_MORNING_RESEARCH_SETTINGS: MorningResearchSettings = {
   maxWatchlistItems: 6,
-  maxTradeCandidates: 4,
   maxGttCandidates: 3,
   riskTolerance: 'conservative',
 };
@@ -27,7 +25,7 @@ export type MorningResearchPromptContext = {
 };
 
 const RISK_TOLERANCE_GUIDANCE: Record<ResearchRiskTolerance, string> = {
-  conservative: 'Capital preservation first. Prefer fewer ideas, lower confidence unless evidence is strong, no speculative trades, and empty trade/GTT arrays when evidence is weak.',
+  conservative: 'Capital preservation first. Prefer fewer ideas, no speculative trades, and empty GTT arrays when evidence is weak.',
   moderate: 'Balanced risk. Allow more candidates when evidence is multi-source and liquidity is clear, but every idea still needs condition-based entry and explicit invalidation.',
   aggressive: 'Higher idea tolerance for manual review only. You may include more momentum/event-driven ideas, but must still avoid hallucinated prices, illiquid setups, and unmanaged downside.',
 };
@@ -58,17 +56,25 @@ const MORNING_RESEARCH_JSON_SCHEMA = {
       reason: 'string: why this belongs on watchlist today',
     },
   ],
+  riskWarnings: ['string: concrete risks, missing data, or reasons for manual validation'],
+};
+
+const MORNING_RESEARCH_IDEAS_JSON_SCHEMA = {
+  ...MORNING_RESEARCH_JSON_SCHEMA,
   tradeCandidates: [
     {
       exchange: 'NSE | NFO',
       tradingsymbol: 'string: uppercase broker/exchange symbol',
       side: 'BUY | SELL',
-      thesis: 'string: setup and evidence',
-      entryPlan: 'string: condition-based entry, not a blind market order',
-      invalidation: 'string: clear reason to avoid/exit',
-      confidence: 'number: integer 0-100; calibrate to configured risk tolerance and evidence quality',
+      thesis: 'string: evidence-backed candidate thesis',
+      entryPlan: 'string: condition-based entry plan; no invented prices',
+      invalidation: 'string: concrete invalidation condition or missing-data caveat',
+      confidence: 'number: integer 0-100',
     },
   ],
+};
+
+const MORNING_RESEARCH_GTT_JSON_SCHEMA = {
   gttCandidates: [
     {
       exchange: 'NSE | NFO',
@@ -82,7 +88,6 @@ const MORNING_RESEARCH_JSON_SCHEMA = {
       rationale: 'string: why this draft two-leg GTT with target and stoploss is appropriate',
     },
   ],
-  riskWarnings: ['string: concrete risks, missing data, or reasons for manual validation'],
 };
 
 export const MORNING_RESEARCH_USER_PROMPT_TEMPLATE = [
@@ -90,8 +95,7 @@ export const MORNING_RESEARCH_USER_PROMPT_TEMPLATE = [
   '',
   'Research settings:',
   '- Maximum watchlist items: {{maxWatchlistItems}}',
-  '- Maximum trade candidates: {{maxTradeCandidates}}',
-  '- Maximum GTT candidates: {{maxGttCandidates}}',
+  '- Maximum transient trade candidates: {{maxTransientTradeCandidates}}',
   '- Risk tolerance: {{riskTolerance}}',
   '- Risk tolerance guidance: {{riskToleranceGuidance}}',
   '',
@@ -99,18 +103,41 @@ export const MORNING_RESEARCH_USER_PROMPT_TEMPLATE = [
   '- Return exactly one JSON object matching this schema:',
   '{{schema}}',
   '- Never exceed the maximum item counts listed in Research settings.',
-  '- Keep tradeCandidates sparse. If evidence is weak for the configured risk tolerance, return an empty tradeCandidates array.',
-  '- All candidates must be suitable for manual review before execution.',
-  '- GTT candidates must be two-leg Kite GTT drafts with both targetPrice and stopLossPrice. Do not output one-sided GTTs.',
-  '- transactionType is the exit side for both GTT legs. For SELL exits, targetPrice must be above stopLossPrice. For BUY exits, targetPrice must be below stopLossPrice.',
-  '- Do not include intraday price levels unless they are present in the supplied context or sources.',
+  '- Trade candidates are transient planning artifacts only. They are not approval objects and are not persisted as database rows.',
+  '- Do not include GTT candidates in this stage.',
   '- Add riskWarnings for stale, missing, conflicting, or single-source evidence.',
   '',
   'Available context:',
   '{{context}}',
 ].join('\n');
 
-export function buildMorningResearchMessages(context: MorningResearchPromptContext): LlmMessage[] {
+export const MORNING_RESEARCH_GTT_USER_PROMPT_TEMPLATE = [
+  'Convert selected Stage 1 trade candidates into draft two-leg Kite GTT candidates for manual review.',
+  '',
+  'Research settings:',
+  '- Maximum GTT candidates: {{maxGttCandidates}}',
+  '- Risk tolerance: {{riskTolerance}}',
+  '- Risk tolerance guidance: {{riskToleranceGuidance}}',
+  '',
+  'Output requirements:',
+  '- Return exactly one JSON object matching this schema:',
+  '{{schema}}',
+  '- The model must choose which Stage 1 trade candidates advance. Return fewer than the maximum when evidence is weak.',
+  '- Only use candidates and context from Stage 1 and the supplied source/broker context.',
+  '- GTT candidates must be draft-only and suitable for manual review before execution.',
+  '- GTT candidates must be two-leg Kite GTT drafts with both targetPrice and stopLossPrice. Do not output one-sided GTTs.',
+  '- transactionType is the exit side for both GTT legs. For SELL exits, targetPrice must be above stopLossPrice. For BUY exits, targetPrice must be below stopLossPrice.',
+  '- Do not include intraday price levels unless they are present in the supplied context or sources.',
+  '',
+  'Available context:',
+  '{{context}}',
+].join('\n');
+
+export function transientTradeCandidateLimit(settings: Pick<MorningResearchSettings, 'maxGttCandidates'>): number {
+  return Math.max(4, settings.maxGttCandidates * 3);
+}
+
+export function buildMorningResearchIdeasMessages(context: MorningResearchPromptContext): LlmMessage[] {
   const { settings } = context;
   return [
     { role: 'system', content: MORNING_RESEARCH_SYSTEM_PROMPT },
@@ -118,12 +145,27 @@ export function buildMorningResearchMessages(context: MorningResearchPromptConte
       role: 'user',
       content: MORNING_RESEARCH_USER_PROMPT_TEMPLATE
         .replace('{{maxWatchlistItems}}', String(settings.maxWatchlistItems))
-        .replace('{{maxTradeCandidates}}', String(settings.maxTradeCandidates))
+        .replace('{{maxTransientTradeCandidates}}', String(transientTradeCandidateLimit(settings)))
+        .replace('{{riskTolerance}}', settings.riskTolerance)
+        .replace('{{riskToleranceGuidance}}', RISK_TOLERANCE_GUIDANCE[settings.riskTolerance])
+        .replace('{{schema}}', JSON.stringify(MORNING_RESEARCH_IDEAS_JSON_SCHEMA, null, 2))
+        .replace('{{context}}', JSON.stringify({ broker: context.broker, sources: context.sources, rcaLearnings: context.rcaLearnings ?? [] })),
+    },
+  ];
+}
+
+export function buildMorningResearchGttMessages(context: MorningResearchPromptContext & { ideasPlan: Record<string, unknown> }): LlmMessage[] {
+  const { settings } = context;
+  return [
+    { role: 'system', content: MORNING_RESEARCH_SYSTEM_PROMPT },
+    {
+      role: 'user',
+      content: MORNING_RESEARCH_GTT_USER_PROMPT_TEMPLATE
         .replace('{{maxGttCandidates}}', String(settings.maxGttCandidates))
         .replace('{{riskTolerance}}', settings.riskTolerance)
         .replace('{{riskToleranceGuidance}}', RISK_TOLERANCE_GUIDANCE[settings.riskTolerance])
-        .replace('{{schema}}', JSON.stringify(MORNING_RESEARCH_JSON_SCHEMA, null, 2))
-        .replace('{{context}}', JSON.stringify({ broker: context.broker, sources: context.sources, rcaLearnings: context.rcaLearnings ?? [] })),
+        .replace('{{schema}}', JSON.stringify(MORNING_RESEARCH_GTT_JSON_SCHEMA, null, 2))
+        .replace('{{context}}', JSON.stringify({ broker: context.broker, sources: context.sources, rcaLearnings: context.rcaLearnings ?? [], stage1: context.ideasPlan })),
     },
   ];
 }

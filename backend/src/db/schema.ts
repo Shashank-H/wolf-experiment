@@ -143,7 +143,6 @@ export const orders = pgTable('orders', {
   isDryRun: boolean('is_dry_run').notNull().default(false),
   researchSessionId: uuid('research_session_id').references(() => dailyResearchSessions.id, { onDelete: 'set null' }),
   gttCandidateId: uuid('gtt_candidate_id').references(() => gttCandidates.id, { onDelete: 'set null' }),
-  tradeCandidateId: uuid('trade_candidate_id').references(() => tradeCandidates.id, { onDelete: 'set null' }),
   currentPrice: numeric('current_price', { precision: 18, scale: 4 }).notNull().default('0'),
   exitPrice: numeric('exit_price', { precision: 18, scale: 4 }),
   pnl: numeric('pnl', { precision: 18, scale: 4 }).notNull().default('0'),
@@ -189,6 +188,7 @@ export const dailyResearchSessions = pgTable('daily_research_sessions', {
   riskWarnings: jsonb('risk_warnings').$type<string[]>().notNull().default([]),
   model: varchar('model', { length: 128 }),
   rawPlan: jsonb('raw_plan').$type<Record<string, unknown>>().notNull().default({}),
+  agentConversation: jsonb('agent_conversation').$type<Record<string, unknown>>().notNull().default({}),
   isDryRun: boolean('is_dry_run').notNull().default(false),
   dryRunStatus: varchar('dry_run_status', { length: 64 }),
   dryRunTotalPnl: numeric('dry_run_total_pnl', { precision: 18, scale: 4 }).notNull().default('0'),
@@ -230,21 +230,6 @@ export const watchlistItems = pgTable('watchlist_items', {
 }, (table) => [
   uniqueIndex('watchlist_items_user_date_symbol_unique').on(table.userId, table.tradeDate, table.exchange, table.tradingsymbol),
 ]);
-
-export const tradeCandidates = pgTable('trade_candidates', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  sessionId: uuid('session_id').references(() => dailyResearchSessions.id, { onDelete: 'cascade' }),
-  exchange: varchar('exchange', { length: 32 }).notNull().default('NSE'),
-  tradingsymbol: varchar('tradingsymbol', { length: 128 }).notNull(),
-  side: varchar('side', { length: 16 }).notNull().default('BUY'),
-  thesis: text('thesis').notNull().default(''),
-  entryPlan: text('entry_plan').notNull().default(''),
-  invalidation: text('invalidation').notNull().default(''),
-  confidence: integer('confidence').notNull().default(0),
-  raw: jsonb('raw').$type<Record<string, unknown>>().notNull().default({}),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
 
 export const gttCandidates = pgTable('gtt_candidates', {
   id: uuid('id').primaryKey().defaultRandom(),

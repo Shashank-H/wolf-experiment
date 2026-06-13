@@ -317,7 +317,7 @@ input:disabled, textarea:disabled, select:disabled {
 .drawer-scrim { position: fixed; inset: 0; z-index: 30; min-height: 0; padding: 0; border: 0; border-radius: 0; background: rgba(0,0,0,0.28); opacity: 0; pointer-events: none; transition: opacity 160ms ease; }
 .drawer-scrim:hover { background: rgba(0,0,0,0.28); }
 .drawer-scrim.open { opacity: 1; pointer-events: auto; }
-.research-drawer { position: fixed; top: 0; right: 0; z-index: 31; width: min(720px, 96vw); height: 100vh; overflow-y: auto; background: var(--canvas); border-left: 1px solid var(--hairline-strong); box-shadow: -24px 0 60px rgba(0,0,0,0.18); transform: translateX(104%); transition: transform 180ms ease; padding: 24px; }
+.research-drawer { position: fixed; top: 0; right: 0; z-index: 31; width: min(880px, 96vw); height: 100vh; overflow-y: auto; background: var(--canvas); border-left: 1px solid var(--hairline-strong); box-shadow: -24px 0 60px rgba(0,0,0,0.18); transform: translateX(104%); transition: transform 180ms ease; padding: 24px; }
 .research-drawer.open { transform: translateX(0); }
 .drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 20px; border-bottom: 1px solid var(--hairline); }
 .drawer-tabs { position: sticky; top: 0; z-index: 1; display: flex; gap: 8px; padding: 16px 0; background: var(--canvas); border-bottom: 1px solid var(--hairline); }
@@ -328,6 +328,24 @@ input:disabled, textarea:disabled, select:disabled {
 .detail-block strong { color: var(--ink); }
 .detail-block p:last-child { margin-bottom: 0; }
 .source-list li { margin-bottom: 18px; }
+.agent-deep-dive { gap: 22px; }
+.llm-run-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px; border: 1px solid var(--hairline-strong); background: linear-gradient(135deg, var(--surface-card), var(--surface-soft)); }
+.llm-run-card h2 { margin: 0; font-size: clamp(20px, 3vw, 28px); letter-spacing: -0.03em; }
+.section-kicker { display: flex; align-items: center; gap: 10px; color: var(--mute); font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
+.section-kicker span { width: 28px; height: 1px; background: var(--hairline-strong); }
+.thought-stream, .chat-transcript { display: grid; gap: 12px; }
+.thought-card { display: grid; grid-template-columns: 48px 1fr; gap: 14px; padding: 16px; border: 1px solid var(--hairline); background: var(--surface-soft); }
+.thought-index { width: 36px; height: 36px; display: grid; place-items: center; color: var(--mute); border: 1px solid var(--hairline-strong); border-radius: 999px; font-size: 12px; font-weight: 700; }
+.thought-card h3 { margin: 0 0 8px; color: var(--ink); font-size: 15px; letter-spacing: -0.01em; }
+.thought-card p { margin: 0; line-height: 1.6; }
+.thought-card code { display: inline-block; max-width: 100%; margin-top: 10px; padding: 6px 8px; overflow-x: auto; color: var(--mute); background: var(--canvas); border: 1px solid var(--hairline); font-size: 12px; }
+.chat-bubble { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--hairline); background: var(--surface-card); }
+.chat-bubble.system { border-left: 3px solid var(--mute); }
+.chat-bubble.user { border-left: 3px solid var(--accent); }
+.chat-bubble.assistant { border-left: 3px solid var(--success); background: var(--surface-soft); }
+.chat-role { display: flex; justify-content: space-between; gap: 12px; color: var(--ink); text-transform: capitalize; }
+.chat-role small { color: var(--mute); font-weight: 400; text-transform: none; }
+.chat-bubble pre { max-height: 460px; overflow: auto; padding: 12px; background: var(--canvas); border: 1px solid var(--hairline); color: var(--body); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; line-height: 1.65; }
 .metric { color: var(--ink); font-size: clamp(22px, 4vw, 38px); font-weight: 700; line-height: 1.5; }
 .plain-list { margin: 0; padding-left: 18px; color: var(--body); line-height: 1.5; }
 .plain-list li { margin-bottom: 10px; }

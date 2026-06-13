@@ -72,7 +72,7 @@ function SummaryTab({ day, mode, setTab }: { day: DayBundle; mode: 'today' | 'hi
     <div className="page-grid three">
       <Card title="Execution" marker="[E]"><div className="metric-list"><p><strong>{day.summary.orders}</strong> orders</p><p><strong>{day.summary.placedOrders}</strong> placed / active</p><p><strong>{formatMoney(day.summary.pnl)}</strong> PnL</p></div></Card>
       <Card title="Risk queue" marker="[Q]"><div className="metric-list"><p><strong>{day.summary.approvals}</strong> approvals</p><p><strong>{day.summary.pendingApprovals}</strong> pending</p><p><strong>{day.summary.rcaReports}</strong> RCA reports</p></div></Card>
-      <Card title="Market automation" marker="[M]"><div className="metric-list"><p><strong>{day.summary.triggers}</strong> triggers</p><p><strong>{day.summary.activeGtts}</strong> active GTTs</p><p><strong>{day.summary.tradeCandidates}</strong> trade candidates</p></div></Card>
+      <Card title="Market automation" marker="[M]"><div className="metric-list"><p><strong>{day.summary.triggers}</strong> triggers</p><p><strong>{day.summary.activeGtts}</strong> active GTTs</p><p><strong>{day.summary.gttCandidates}</strong> GTT drafts</p></div></Card>
     </div>
   </div>;
 }
@@ -84,9 +84,6 @@ function ResearchTab({ day }: { day: DayBundle }) {
     </Card>
     <Card title="Watchlist" marker="[W]">
       {day.watchlist.length ? <div className="watch-chip-grid">{day.watchlist.map((item) => <div className="watch-chip" key={item.id}><strong>{item.tradingsymbol}</strong><span>{item.bias} · {item.source}</span><p>{item.reason}</p></div>)}</div> : <EmptyState>No watchlist items.</EmptyState>}
-    </Card>
-    <Card title="Trade candidates" marker="[T]" className="wide">
-      {day.tradeCandidates.length ? day.tradeCandidates.map((item) => <div className="detail-block" key={item.id}><strong>{item.exchange}:{item.tradingsymbol} · {item.side} · {item.confidence}%</strong><p>{item.thesis}</p><p className="note">Entry: {item.entryPlan}</p><p className="note">Invalidation: {item.invalidation}</p></div>) : <EmptyState>No trade candidates.</EmptyState>}
     </Card>
     <Card title="Sources" marker="[S]" className="wide">
       {day.sources.length ? <ul className="plain-list source-list">{day.sources.map((source) => <li key={source.id}><strong>{source.provider}</strong> {source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a> : source.title}<br /><span className="note">{source.summary}</span></li>)}</ul> : <EmptyState>No saved sources.</EmptyState>}

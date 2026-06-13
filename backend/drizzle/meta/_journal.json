@@ -78,6 +78,20 @@
       "when": 1780744000000,
       "tag": "0010_trading_safety_invariant",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1780902648807,
+      "tag": "0011_good_devos",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1781481600000,
+      "tag": "0012_remove_trade_candidates",
+      "breakpoints": true
     }
   ]
 }

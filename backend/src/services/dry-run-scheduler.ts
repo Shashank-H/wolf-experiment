@@ -3,8 +3,10 @@ import { env } from '../config/env';
 import { db } from '../db/client';
 import { userSettings, users } from '../db/schema';
 import { audit } from '../utils/audit';
-import { completeDryRunDay, runDryRunMorning } from './dry-run';
+import { completeDryRunDay, completeLiveTradingDay, runDryRunMorning, updateTrackedOrderPnls } from './dry-run';
 import { revalidateGtts } from './execution';
+import { runMorningResearch } from './research';
+import { syncOrders } from './broker-sync';
 import { indianTradeDate } from './research';
 
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -40,8 +42,12 @@ async function runIntradayLoopIfDue(userId: string, settings: typeof userSetting
   if (loopRunKeys.get(userId) === key) return;
   loopRunKeys.set(userId, key);
   try {
-    const gtt = await revalidateGtts(userId);
-    await audit('trading.scheduler.intraday_loop', { userId, metadata: { intervalMinutes: settings.tradingLoopIntervalMinutes, gtt } });
+    if (!settings.dryRunModeEnabled) await syncOrders(userId).catch((error) => ({ ok: false, reason: error instanceof Error ? error.message : String(error) }));
+    const [gtt, tracking] = await Promise.all([
+      revalidateGtts(userId),
+      updateTrackedOrderPnls(userId, settings.dryRunModeEnabled, indianTradeDate(now)),
+    ]);
+    await audit('trading.scheduler.intraday_loop', { userId, metadata: { intervalMinutes: settings.tradingLoopIntervalMinutes, mode: settings.dryRunModeEnabled ? 'dry_run' : 'live', gtt, tracking } });
   } catch (error) {
     await audit('trading.scheduler.intraday_loop.failed', { userId, metadata: { error: error instanceof Error ? error.message : String(error) } });
   }
@@ -52,17 +58,16 @@ async function runForUser(kind: 'morning' | 'eod', tradeDate: string, userId: st
   if (completedKeys.has(key)) return;
   completedKeys.add(key);
   const [settings] = await db.select().from(userSettings).where(eq(userSettings.userId, userId)).limit(1);
-  if (!settings?.dryRunModeEnabled) {
-    await audit(`trading.scheduler.${kind}.live_not_implemented`, { userId, metadata: { tradeDate } });
-    return;
-  }
-  {
-    try {
-      await fn();
-      await audit(`trading.scheduler.${kind}`, { userId, metadata: { tradeDate, mode: 'dry_run' } });
-    } catch (error) {
-      await audit(`trading.scheduler.${kind}.failed`, { userId, metadata: { tradeDate, error: error instanceof Error ? error.message : String(error) } });
+  try {
+    if (settings?.dryRunModeEnabled) await fn();
+    else if (kind === 'morning') await runMorningResearch(userId, { dryRun: false });
+    else {
+      await syncOrders(userId).catch(() => null);
+      await completeLiveTradingDay(userId, tradeDate);
     }
+    await audit(`trading.scheduler.${kind}`, { userId, metadata: { tradeDate, mode: settings?.dryRunModeEnabled ? 'dry_run' : 'live' } });
+  } catch (error) {
+    await audit(`trading.scheduler.${kind}.failed`, { userId, metadata: { tradeDate, mode: settings?.dryRunModeEnabled ? 'dry_run' : 'live', error: error instanceof Error ? error.message : String(error) } });
   }
 }
 

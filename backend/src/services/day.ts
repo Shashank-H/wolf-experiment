@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, lt } from 'drizzle-orm';
 import { db } from '../db/client';
-import { approvalRequests, dailyResearchSessions, gttCandidates, gttOrders, orderEvents, orders, rcaReports, researchSources, tradeCandidates, triggerEvents, triggerRules, watchlistItems } from '../db/schema';
+import { approvalRequests, dailyResearchSessions, gttCandidates, gttOrders, orderEvents, orders, rcaReports, researchSources, triggerEvents, triggerRules, watchlistItems } from '../db/schema';
 import { indianTradeDate } from './research';
 
 export async function getTodayBundle(userId: string) {
@@ -11,10 +11,9 @@ export async function getDayBundle(userId: string, tradeDate: string) {
   const { start, end } = utcBoundsForTradeDate(tradeDate);
   const researchSessions = await db.select().from(dailyResearchSessions).where(and(eq(dailyResearchSessions.userId, userId), eq(dailyResearchSessions.tradeDate, tradeDate))).orderBy(desc(dailyResearchSessions.createdAt));
   const sessionIds = new Set(researchSessions.map((session) => session.id));
-  const [sources, watchlist, trades, gttDrafts, gtts, triggerRows, triggerEventRows, approvalRows, orderRows, rcaRows] = await Promise.all([
+  const [sources, watchlist, gttDrafts, gtts, triggerRows, triggerEventRows, approvalRows, orderRows, rcaRows] = await Promise.all([
     db.select().from(researchSources).where(and(eq(researchSources.userId, userId), gte(researchSources.createdAt, start), lt(researchSources.createdAt, end))).orderBy(desc(researchSources.createdAt)),
     db.select().from(watchlistItems).where(and(eq(watchlistItems.userId, userId), eq(watchlistItems.tradeDate, tradeDate))).orderBy(desc(watchlistItems.createdAt)),
-    db.select().from(tradeCandidates).where(and(eq(tradeCandidates.userId, userId), gte(tradeCandidates.createdAt, start), lt(tradeCandidates.createdAt, end))).orderBy(desc(tradeCandidates.createdAt)),
     db.select().from(gttCandidates).where(and(eq(gttCandidates.userId, userId), gte(gttCandidates.createdAt, start), lt(gttCandidates.createdAt, end))).orderBy(desc(gttCandidates.createdAt)),
     db.select().from(gttOrders).where(and(eq(gttOrders.userId, userId), gte(gttOrders.createdAt, start), lt(gttOrders.createdAt, end))).orderBy(desc(gttOrders.createdAt)),
     db.select().from(triggerRules).where(and(eq(triggerRules.userId, userId), gte(triggerRules.createdAt, start), lt(triggerRules.createdAt, end))).orderBy(desc(triggerRules.createdAt)),
@@ -31,13 +30,12 @@ export async function getDayBundle(userId: string, tradeDate: string) {
     tradeDate,
     start: start.toISOString(),
     end: end.toISOString(),
-    summary: summarizeDay({ researchSessions, trades, gttDrafts, gtts, triggerRows, approvalRows, orderRows, rcaRows }),
+    summary: summarizeDay({ researchSessions, gttDrafts, gtts, triggerRows, approvalRows, orderRows, rcaRows }),
     researchSessions,
     primarySession,
     dryRunSession,
     sources: sources.filter((source) => !source.sessionId || sessionIds.has(source.sessionId)),
     watchlist,
-    tradeCandidates: trades,
     gttCandidates: gttDrafts,
     gttOrders: gtts,
     triggers: triggerRows,
@@ -62,14 +60,13 @@ export async function getHistory(userId: string, limit = 60) {
   }));
 }
 
-function summarizeDay(input: { researchSessions: unknown[]; trades: unknown[]; gttDrafts: Array<{ status: string }>; gtts: Array<{ status: string }>; triggerRows: unknown[]; approvalRows: Array<{ status: string }>; orderRows: Array<{ status: string; pnl?: string }>; rcaRows: Array<{ dailySummary: string; totalPnl: string }> }) {
+function summarizeDay(input: { researchSessions: unknown[]; gttDrafts: Array<{ status: string }>; gtts: Array<{ status: string }>; triggerRows: unknown[]; approvalRows: Array<{ status: string }>; orderRows: Array<{ status: string; pnl?: string }>; rcaRows: Array<{ dailySummary: string; totalPnl: string }> }) {
   const pendingApprovals = input.approvalRows.filter((item) => item.status === 'pending').length;
   const placedOrders = input.orderRows.filter((item) => !['failed', 'cancelled'].includes(item.status)).length;
   const rca = input.rcaRows[0];
   const pnl = input.orderRows.reduce((sum, order) => sum + Number(order.pnl ?? 0), 0) + Number(rca?.totalPnl ?? 0);
   return {
     researchRuns: input.researchSessions.length,
-    tradeCandidates: input.trades.length,
     gttCandidates: input.gttDrafts.length,
     activeGtts: input.gtts.filter((item) => ['created', 'submitted', 'active', 'open'].includes(item.status)).length,
     triggers: input.triggerRows.length,

@@ -47,6 +47,25 @@ export type SettingsResponse = {
   brokerAccount?: BrokerAccount | null;
 };
 
+export type AgentConversationMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+  createdAt?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type AgentConversationTrace = {
+  provider?: string;
+  model?: string;
+  startedAt?: string;
+  completedAt?: string;
+  status?: string;
+  messages?: AgentConversationMessage[];
+  thoughtDetails?: Array<{ title: string; detail: string; metadata?: Record<string, unknown> }>;
+  rawResponse?: Record<string, unknown>;
+  error?: string;
+};
+
 export type ResearchSession = {
   id: string;
   tradeDate: string;
@@ -55,6 +74,7 @@ export type ResearchSession = {
   sectorBias: Array<{ sector: string; bias: string; reason: string }>;
   riskWarnings: string[];
   model?: string | null;
+  agentConversation?: AgentConversationTrace;
   createdAt: string;
 };
 
@@ -76,17 +96,6 @@ export type WatchlistItem = {
   bias: string;
   source: string;
   status: string;
-};
-
-export type TradeCandidate = {
-  id: string;
-  exchange: string;
-  tradingsymbol: string;
-  side: string;
-  thesis: string;
-  entryPlan: string;
-  invalidation: string;
-  confidence: number;
 };
 
 export type GttCandidate = {
@@ -136,7 +145,6 @@ export type ResearchBundle = {
   session: ResearchSession;
   sources: ResearchSource[];
   watchlist: WatchlistItem[];
-  tradeCandidates: TradeCandidate[];
   gttCandidates: GttCandidate[];
   providerWarnings: string[];
 };
@@ -219,7 +227,6 @@ export type OrderEvent = {
 
 export type DaySummary = {
   researchRuns: number;
-  tradeCandidates: number;
   gttCandidates: number;
   activeGtts: number;
   triggers: number;
@@ -240,7 +247,6 @@ export type DayBundle = {
   dryRunSession: ResearchSession | null;
   sources: ResearchSource[];
   watchlist: WatchlistItem[];
-  tradeCandidates: TradeCandidate[];
   gttCandidates: GttCandidate[];
   gttOrders: GttOrder[];
   triggers: TriggerRule[];

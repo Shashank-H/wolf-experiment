@@ -1,12 +1,12 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { apiKeys, dailyResearchSessions, gttCandidates, holdingsSnapshots, positions, rcaReports, researchSources, tradeCandidates, userSettings, watchlistItems } from '../db/schema';
+import { apiKeys, dailyResearchSessions, gttCandidates, holdingsSnapshots, positions, rcaReports, researchSources, userSettings, watchlistItems } from '../db/schema';
 import { ExaProvider } from '../providers/research/ExaProvider';
 import { FinnhubProvider } from '../providers/research/FinnhubProvider';
 import { OpenAiCompatibleProvider } from '../providers/research/OpenAiCompatibleProvider';
-import { DEFAULT_MORNING_RESEARCH_SETTINGS, buildMorningResearchMessages } from '../prompts/morning-research';
+import { DEFAULT_MORNING_RESEARCH_SETTINGS, buildMorningResearchGttMessages, buildMorningResearchIdeasMessages, transientTradeCandidateLimit } from '../prompts/morning-research';
 import type { MorningResearchSettings, ResearchRiskTolerance } from '../prompts/morning-research';
-import type { MorningResearchPlan, ResearchSource } from '../providers/research/types';
+import type { AgentConversationTrace, LlmMessage, MorningResearchGttPlan, MorningResearchIdeasPlan, MorningResearchPlan, ResearchSource } from '../providers/research/types';
 import { audit } from '../utils/audit';
 import { decryptSecret } from '../utils/crypto';
 
@@ -14,7 +14,6 @@ export type MorningResearchResult = {
   session: typeof dailyResearchSessions.$inferSelect;
   sources: Array<typeof researchSources.$inferSelect>;
   watchlist: Array<typeof watchlistItems.$inferSelect>;
-  tradeCandidates: Array<typeof tradeCandidates.$inferSelect>;
   gttCandidates: Array<typeof gttCandidates.$inferSelect>;
   providerWarnings: string[];
 };
@@ -41,7 +40,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
   const symbols = [...new Set([...context.holdings.map((row) => row.tradingsymbol), ...context.positions.map((row) => row.tradingsymbol), ...DEFAULT_SYMBOLS])].slice(0, 16);
   const sources = await collectSources(symbols, secrets, providerWarnings);
   const model = typeof providerConfig.mediumModel === 'string' && providerConfig.mediumModel.trim() ? providerConfig.mediumModel.trim() : 'gpt-4o-mini';
-  const plan = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, rcaLearnings });
+  const { plan, conversation } = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, rcaLearnings });
 
   const [session] = await db.insert(dailyResearchSessions).values({
     userId,
@@ -52,6 +51,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
     riskWarnings: [...plan.riskWarnings, ...providerWarnings],
     model: secrets.llmApiKey ? model : 'deterministic-fallback',
     rawPlan: plan as unknown as Record<string, unknown>,
+    agentConversation: conversation as unknown as Record<string, unknown>,
     isDryRun,
     dryRunStatus: isDryRun ? 'active' : null,
     dryRunSummary: isDryRun ? 'Dry run research completed; simulated GTTs approved for tracking. No broker orders were placed.' : '',
@@ -64,6 +64,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
       riskWarnings: [...plan.riskWarnings, ...providerWarnings],
       model: secrets.llmApiKey ? model : 'deterministic-fallback',
       rawPlan: plan as unknown as Record<string, unknown>,
+      agentConversation: conversation as unknown as Record<string, unknown>,
       isDryRun,
       dryRunStatus: isDryRun ? 'active' : null,
       dryRunSummary: isDryRun ? 'Dry run research completed; simulated GTTs approved for tracking. No broker orders were placed.' : '',
@@ -75,7 +76,6 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
 
   await Promise.all([
     db.delete(researchSources).where(eq(researchSources.sessionId, session.id)),
-    db.delete(tradeCandidates).where(eq(tradeCandidates.sessionId, session.id)),
     db.delete(gttCandidates).where(eq(gttCandidates.sessionId, session.id)),
     db.delete(watchlistItems).where(and(eq(watchlistItems.userId, userId), eq(watchlistItems.tradeDate, tradeDate), eq(watchlistItems.source, 'ai'))),
   ]);
@@ -108,21 +108,6 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
     }))).onConflictDoNothing().returning()
     : [];
 
-  const tradeRows = plan.tradeCandidates.length
-    ? await db.insert(tradeCandidates).values(plan.tradeCandidates.map((item) => ({
-      userId,
-      sessionId: session.id,
-      exchange: item.exchange || 'NSE',
-      tradingsymbol: item.tradingsymbol,
-      side: item.side,
-      thesis: item.thesis,
-      entryPlan: item.entryPlan,
-      invalidation: item.invalidation,
-      confidence: clampInt(item.confidence, 0, 100),
-      raw: item as unknown as Record<string, unknown>,
-    }))).returning()
-    : [];
-
   const gttRows = plan.gttCandidates.length
     ? await db.insert(gttCandidates).values(plan.gttCandidates.map((item) => ({
       userId,
@@ -142,7 +127,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
     : [];
 
   await audit('research.morning.run', { userId, entityType: 'daily_research_session', entityId: session.id, metadata: { tradeDate, sources: sourceRows.length, watchlist: watchlistRows.length } });
-  return { session, sources: sourceRows, watchlist: watchlistRows, tradeCandidates: tradeRows, gttCandidates: gttRows, providerWarnings };
+  return { session, sources: sourceRows, watchlist: watchlistRows, gttCandidates: gttRows, providerWarnings };
 }
 
 export async function getTodayResearch(userId: string): Promise<MorningResearchResult | null> {
@@ -186,13 +171,12 @@ export async function deleteWatchlistItem(userId: string, id: string) {
 }
 
 async function hydrateSession(userId: string, session: typeof dailyResearchSessions.$inferSelect): Promise<MorningResearchResult> {
-  const [sources, watchlist, tradeRows, gttRows] = await Promise.all([
+  const [sources, watchlist, gttRows] = await Promise.all([
     db.select().from(researchSources).where(and(eq(researchSources.userId, userId), eq(researchSources.sessionId, session.id))).orderBy(desc(researchSources.createdAt)),
     db.select().from(watchlistItems).where(and(eq(watchlistItems.userId, userId), eq(watchlistItems.sessionId, session.id))).orderBy(desc(watchlistItems.createdAt)),
-    db.select().from(tradeCandidates).where(and(eq(tradeCandidates.userId, userId), eq(tradeCandidates.sessionId, session.id))).orderBy(desc(tradeCandidates.createdAt)),
     db.select().from(gttCandidates).where(and(eq(gttCandidates.userId, userId), eq(gttCandidates.sessionId, session.id))).orderBy(desc(gttCandidates.createdAt)),
   ]);
-  return { session, sources, watchlist, tradeCandidates: tradeRows, gttCandidates: gttRows, providerWarnings: [] };
+  return { session, sources, watchlist, gttCandidates: gttRows, providerWarnings: [] };
 }
 
 async function loadBrokerContext(userId: string): Promise<BrokerContext> {
@@ -238,48 +222,141 @@ async function collectSources(symbols: string[], secrets: Awaited<ReturnType<typ
   }).slice(0, 24);
 }
 
-async function buildPlan(input: { context: BrokerContext; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings; rcaLearnings: Awaited<ReturnType<typeof loadRcaLearnings>> }): Promise<MorningResearchPlan> {
+async function buildPlan(input: { context: BrokerContext; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings; rcaLearnings: Awaited<ReturnType<typeof loadRcaLearnings>> }): Promise<{ plan: MorningResearchPlan; conversation: AgentConversationTrace }> {
+  const ideasMessages = buildMorningResearchIdeasMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings });
   if (!input.llmApiKey) {
     input.providerWarnings.push('LLM API key missing; generated deterministic fallback plan.');
-    return fallbackPlan(input.context, input.sources, input.researchSettings);
+    const plan = fallbackPlan(input.context, input.sources, input.researchSettings);
+    const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings, ideasPlan: plan });
+    return { plan, conversation: fallbackConversation(input.model, [...ideasMessages, ...gttMessages], plan, 'LLM API key missing; deterministic fallback used.') };
   }
+
+  const llm = new OpenAiCompatibleProvider(input.llmApiKey, input.llmBaseUrl);
+  let ideasPlan: MorningResearchIdeasPlan;
+  let ideasConversation: AgentConversationTrace;
   try {
-    const llm = new OpenAiCompatibleProvider(input.llmApiKey, input.llmBaseUrl);
-    const json = await llm.generateJson({
-      model: input.model,
-      temperature: 0.15,
-      messages: buildMorningResearchMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings }),
-    });
-    return normalizePlan(json, input.context, input.sources, input.researchSettings);
+    const result = await llm.generateJsonWithConversation({ model: input.model, temperature: 0.15, messages: ideasMessages });
+    ideasPlan = normalizeIdeasPlan(result.json, input.context, input.sources, input.researchSettings);
+    ideasConversation = { ...result.conversation, thoughtDetails: [...result.conversation.thoughtDetails, ...deriveIdeasThoughtDetails(ideasPlan)] };
   } catch (error) {
-    input.providerWarnings.push(error instanceof Error ? error.message : 'LLM plan failed');
-    return fallbackPlan(input.context, input.sources, input.researchSettings);
+    const message = error instanceof Error ? error.message : 'LLM plan failed';
+    input.providerWarnings.push(message);
+    const plan = fallbackPlan(input.context, input.sources, input.researchSettings);
+    const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings, ideasPlan: plan });
+    return { plan, conversation: fallbackConversation(input.model, [...ideasMessages, ...gttMessages], plan, message, 'failed') };
   }
+
+  const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, rcaLearnings: input.rcaLearnings, ideasPlan: ideasPlan as unknown as Record<string, unknown> });
+  try {
+    const result = await llm.generateJsonWithConversation({ model: input.model, temperature: 0.1, messages: gttMessages });
+    const gttPlan = normalizeGttPlan(result.json, input.researchSettings);
+    const plan: MorningResearchPlan = { ...ideasPlan, ...gttPlan };
+    return { plan, conversation: mergeConversations(input.model, ideasConversation, { ...result.conversation, thoughtDetails: [...result.conversation.thoughtDetails, ...deriveGttThoughtDetails(gttPlan)] }, plan) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'LLM GTT drafting failed';
+    input.providerWarnings.push(message);
+    const gttPlan = fallbackGttPlan(input.researchSettings);
+    const plan: MorningResearchPlan = { ...ideasPlan, ...gttPlan };
+    const fallbackGttConversation = fallbackConversation(input.model, gttMessages, plan, message, 'failed');
+    return { plan, conversation: mergeConversations(input.model, ideasConversation, fallbackGttConversation, plan, 'failed', message) };
+  }
+}
+
+function fallbackConversation(model: string, messages: LlmMessage[], plan: MorningResearchPlan, reason: string, status: 'fallback' | 'failed' = 'fallback'): AgentConversationTrace {
+  const now = new Date().toISOString();
+  return {
+    provider: 'deterministic-fallback',
+    model,
+    startedAt: now,
+    completedAt: now,
+    status,
+    messages: [
+      ...messages.map((message) => ({ ...message, createdAt: now, metadata: { source: 'request' } })),
+      { role: 'assistant', content: JSON.stringify(plan, null, 2), createdAt: now, metadata: { source: 'fallback_response', reason } },
+    ],
+    thoughtDetails: [{ title: 'Fallback path', detail: reason }, ...derivePlanThoughtDetails(plan)],
+    rawResponse: { fallback: true, reason },
+    error: status === 'failed' ? reason : undefined,
+  };
+}
+
+function derivePlanThoughtDetails(plan: MorningResearchPlan) {
+  return [
+    ...deriveIdeasThoughtDetails(plan),
+    ...deriveGttThoughtDetails(plan),
+  ];
+}
+
+function deriveIdeasThoughtDetails(plan: MorningResearchIdeasPlan) {
+  return [
+    { title: 'Stage 1 ideas validated', detail: `${plan.watchlist.length} watchlist item(s), ${plan.tradeCandidates.length} transient trade candidate(s), ${plan.riskWarnings.length} risk warning(s). Trade candidates remain session-only.` },
+    ...plan.tradeCandidates.map((item) => ({ title: `Transient idea · ${item.tradingsymbol}`, detail: item.thesis, metadata: { exchange: item.exchange, side: item.side, confidence: item.confidence, entryPlan: item.entryPlan, invalidation: item.invalidation } })),
+  ];
+}
+
+function deriveGttThoughtDetails(plan: MorningResearchGttPlan) {
+  return [
+    { title: 'Stage 2 GTT drafts validated', detail: `${plan.gttCandidates.length} draft GTT candidate(s) selected for persistence.` },
+    ...plan.gttCandidates.map((item) => ({ title: `Draft GTT · ${item.tradingsymbol}`, detail: item.rationale, metadata: { exchange: item.exchange, transactionType: item.transactionType, targetPrice: item.targetPrice, stopLossPrice: item.stopLossPrice, quantity: item.quantity } })),
+  ];
+}
+
+function mergeConversations(model: string, stage1: AgentConversationTrace, stage2: AgentConversationTrace, plan: MorningResearchPlan, status: AgentConversationTrace['status'] = stage2.status === 'failed' ? 'failed' : 'completed', error?: string): AgentConversationTrace {
+  return {
+    provider: stage1.provider === stage2.provider ? stage1.provider : `${stage1.provider}+${stage2.provider}`,
+    model,
+    startedAt: stage1.startedAt,
+    completedAt: stage2.completedAt,
+    status,
+    messages: [
+      ...stage1.messages.map((message) => ({ ...message, metadata: { ...(message.metadata ?? {}), stage: 'ideas' } })),
+      ...stage2.messages.map((message) => ({ ...message, metadata: { ...(message.metadata ?? {}), stage: 'gtt' } })),
+    ],
+    thoughtDetails: [
+      ...stage1.thoughtDetails,
+      ...stage2.thoughtDetails,
+      { title: 'Two-stage research complete', detail: `${plan.tradeCandidates.length} transient idea(s) considered; ${plan.gttCandidates.length} GTT draft(s) selected for persistence.` },
+    ],
+    rawResponse: { stage1: stage1.rawResponse ?? {}, stage2: stage2.rawResponse ?? {} },
+    error,
+  };
 }
 
 function fallbackPlan(context: BrokerContext, sources: ResearchSource[], settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchPlan {
   const symbols = [...new Set([...context.positions.map((row) => row.tradingsymbol), ...context.holdings.map((row) => row.tradingsymbol), ...DEFAULT_SYMBOLS])].slice(0, settings.maxWatchlistItems);
+  const tradeSymbols = symbols.slice(0, transientTradeCandidateLimit(settings));
   return {
     marketThesis: sources.length
       ? `Review ${sources.length} fresh source(s), but keep execution manual until Phase 4 risk checks are active.`
       : 'No external research providers were available. Use portfolio context only and avoid automated execution.',
     sectorBias: [{ sector: 'Broad market', bias: 'neutral', reason: 'Awaiting validated multi-provider research and risk-engine confirmation.' }],
     watchlist: symbols.map((symbol) => ({ exchange: symbol.includes('NIFTY') ? 'NFO' : 'NSE', tradingsymbol: symbol, bias: 'neutral', reason: 'Carry-forward broker context / benchmark watch item.' })),
-    tradeCandidates: symbols.slice(0, Math.min(settings.maxTradeCandidates, fallbackTradeCandidateCount(settings.riskTolerance))).map((symbol) => ({ exchange: symbol.includes('NIFTY') ? 'NFO' : 'NSE', tradingsymbol: symbol, side: 'BUY', thesis: 'Candidate requires manual confirmation; fallback plan has no directional edge.', entryPlan: 'Wait for price confirmation and risk approval.', invalidation: 'Do not trade if liquidity, spread, or daily loss limits fail.', confidence: 35 })),
+    tradeCandidates: tradeSymbols.map((symbol) => ({ exchange: symbol.includes('NIFTY') ? 'NFO' : 'NSE', tradingsymbol: symbol, side: 'BUY', thesis: 'Deterministic fallback idea from broker context only; requires manual validation.', entryPlan: 'Wait for independently verified evidence and valid price levels before acting.', invalidation: 'Skip if fresh research, liquidity, or risk checks are unavailable.', confidence: 10 })),
     gttCandidates: [],
     riskWarnings: ['Automated execution is disabled for research output.', 'Validate every candidate manually until trigger/risk phases are implemented.'],
   };
 }
 
-function normalizePlan(raw: Record<string, unknown>, context: BrokerContext, sources: ResearchSource[], settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchPlan {
+function fallbackGttPlan(_settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchGttPlan {
+  return { gttCandidates: [] };
+}
+
+function normalizeIdeasPlan(raw: Record<string, unknown>, context: BrokerContext, sources: ResearchSource[], settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchIdeasPlan {
   const fallback = fallbackPlan(context, sources, settings);
+  const sectorBias = arrayValue(raw.sectorBias).slice(0, 8).map((item) => ({ sector: stringValue(item.sector) || 'Market', bias: normalizeSectorBias(item.bias), reason: stringValue(item.reason) || 'No reason supplied.' }));
+  const watchlist = arrayValue(raw.watchlist).slice(0, settings.maxWatchlistItems).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), bias: normalizeBias(item.bias), reason: stringValue(item.reason) || 'LLM watchlist item.' })).filter((item) => item.tradingsymbol);
   return {
     marketThesis: stringValue(raw.marketThesis) || fallback.marketThesis,
-    sectorBias: arrayValue(raw.sectorBias).slice(0, 8).map((item) => ({ sector: stringValue(item.sector) || 'Market', bias: normalizeSectorBias(item.bias), reason: stringValue(item.reason) || 'No reason supplied.' })),
-    watchlist: arrayValue(raw.watchlist).slice(0, settings.maxWatchlistItems).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), bias: normalizeBias(item.bias), reason: stringValue(item.reason) || 'LLM watchlist item.' })).filter((item) => item.tradingsymbol) || fallback.watchlist,
-    tradeCandidates: arrayValue(raw.tradeCandidates).slice(0, settings.maxTradeCandidates).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), side: normalizeSide(item.side), thesis: stringValue(item.thesis) || 'No thesis supplied.', entryPlan: stringValue(item.entryPlan) || 'Manual confirmation required.', invalidation: stringValue(item.invalidation) || 'Abort if risk checks fail.', confidence: clampInt(Number(item.confidence ?? 0), 0, 100) })).filter((item) => item.tradingsymbol),
-    gttCandidates: arrayValue(raw.gttCandidates).slice(0, settings.maxGttCandidates).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), transactionType: normalizeSide(item.transactionType), triggerPrice: optionalNumber(item.triggerPrice ?? item.targetPrice), limitPrice: optionalNumber(item.limitPrice ?? item.stopLossPrice), stopLossPrice: optionalNumber(item.stopLossPrice ?? item.stoplossPrice ?? item.stop_loss_price ?? item.limitPrice), targetPrice: optionalNumber(item.targetPrice ?? item.target_price ?? item.target ?? item.triggerPrice), quantity: clampInt(Number(item.quantity ?? 1), 1, 1_000_000), rationale: stringValue(item.rationale) || 'Draft two-leg GTT suggestion.' })).filter((item) => item.tradingsymbol),
+    sectorBias: sectorBias.length ? sectorBias : fallback.sectorBias,
+    watchlist: watchlist.length ? watchlist : fallback.watchlist,
+    tradeCandidates: arrayValue(raw.tradeCandidates).slice(0, transientTradeCandidateLimit(settings)).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), side: normalizeSide(item.side), thesis: stringValue(item.thesis) || 'LLM transient trade candidate.', entryPlan: stringValue(item.entryPlan) || 'No entry plan supplied.', invalidation: stringValue(item.invalidation) || 'No invalidation supplied.', confidence: clampInt(Number(item.confidence ?? 0), 0, 100) })).filter((item) => item.tradingsymbol),
     riskWarnings: arrayValue(raw.riskWarnings).map((item) => String(item)).slice(0, 12),
+  };
+}
+
+function normalizeGttPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchGttPlan {
+  return {
+    gttCandidates: arrayValue(raw.gttCandidates).slice(0, settings.maxGttCandidates).map((item) => ({ exchange: stringValue(item.exchange) || 'NSE', tradingsymbol: stringValue(item.tradingsymbol).toUpperCase(), transactionType: normalizeSide(item.transactionType), triggerPrice: optionalNumber(item.triggerPrice ?? item.targetPrice), limitPrice: optionalNumber(item.limitPrice ?? item.stopLossPrice), stopLossPrice: optionalNumber(item.stopLossPrice ?? item.stoplossPrice ?? item.stop_loss_price ?? item.limitPrice), targetPrice: optionalNumber(item.targetPrice ?? item.target_price ?? item.target ?? item.triggerPrice), quantity: clampInt(Number(item.quantity ?? 1), 1, 1_000_000), rationale: stringValue(item.rationale) || 'Draft two-leg GTT suggestion.' })).filter((item) => item.tradingsymbol),
   };
 }
 
@@ -295,7 +372,6 @@ function stringConfig(value: unknown): string | undefined {
 function parseResearchSettings(config: Record<string, unknown>): MorningResearchSettings {
   return {
     maxWatchlistItems: configInt(config.maxWatchlistItems, DEFAULT_MORNING_RESEARCH_SETTINGS.maxWatchlistItems, 0, 24),
-    maxTradeCandidates: configInt(config.maxTradeCandidates, DEFAULT_MORNING_RESEARCH_SETTINGS.maxTradeCandidates, 0, 12),
     maxGttCandidates: configInt(config.maxGttCandidates, DEFAULT_MORNING_RESEARCH_SETTINGS.maxGttCandidates, 0, 12),
     riskTolerance: normalizeRiskTolerance(config.riskTolerance),
   };
@@ -309,10 +385,6 @@ function configInt(value: unknown, fallback: number, min: number, max: number): 
 function normalizeRiskTolerance(value: unknown): ResearchRiskTolerance {
   const text = stringValue(value).toLowerCase();
   return text === 'moderate' || text === 'aggressive' ? text : 'conservative';
-}
-
-function fallbackTradeCandidateCount(riskTolerance: ResearchRiskTolerance): number {
-  return riskTolerance === 'aggressive' ? 3 : riskTolerance === 'moderate' ? 2 : 1;
 }
 
 function stringValue(value: unknown): string {

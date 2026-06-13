@@ -145,7 +145,6 @@ export const settingsRoutes = new Elysia({ prefix: '/settings' })
     try {
       researchConfig = {
         maxWatchlistItems: integerInRange(input.maxWatchlistItems ?? DEFAULT_MORNING_RESEARCH_SETTINGS.maxWatchlistItems, 'maxWatchlistItems', 0, 24),
-        maxTradeCandidates: integerInRange(input.maxTradeCandidates ?? DEFAULT_MORNING_RESEARCH_SETTINGS.maxTradeCandidates, 'maxTradeCandidates', 0, 12),
         maxGttCandidates: integerInRange(input.maxGttCandidates ?? DEFAULT_MORNING_RESEARCH_SETTINGS.maxGttCandidates, 'maxGttCandidates', 0, 12),
         riskTolerance: riskTolerance(input.riskTolerance),
       };
@@ -154,7 +153,8 @@ export const settingsRoutes = new Elysia({ prefix: '/settings' })
       return { error: error instanceof Error ? error.message : 'Invalid research settings' };
     }
     const [existing] = await db.select().from(userSettings).where(eq(userSettings.userId, user.id)).limit(1);
-    const providerConfig = { ...(existing?.providerConfig ?? {}), ...researchConfig };
+    const { maxTradeCandidates: _maxTradeCandidates, ...currentProviderConfig } = existing?.providerConfig ?? {};
+    const providerConfig = { ...currentProviderConfig, ...researchConfig };
     await db.insert(userSettings).values({ userId: user.id, providerConfig }).onConflictDoUpdate({
       target: userSettings.userId,
       set: { providerConfig, updatedAt: new Date() },
