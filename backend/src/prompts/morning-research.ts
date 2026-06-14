@@ -1,3 +1,4 @@
+import { DEFAULT_TRADING_RISK_LIMITS } from '../config/trading-risk';
 import type { LlmMessage, ResearchSource } from '../providers/research/types';
 
 export type ResearchRiskTolerance = 'conservative' | 'moderate' | 'aggressive';
@@ -15,12 +16,7 @@ export type TradingRiskSettings = {
   maxOpenPositions: number;
 };
 
-export const DEFAULT_TRADING_RISK_SETTINGS: TradingRiskSettings = {
-  maxDailyLoss: 0,
-  maxTradesPerDay: 0,
-  maxCapitalPerTrade: 0,
-  maxOpenPositions: 0,
-};
+export const DEFAULT_TRADING_RISK_SETTINGS: TradingRiskSettings = DEFAULT_TRADING_RISK_LIMITS;
 
 export const DEFAULT_MORNING_RESEARCH_SETTINGS: MorningResearchSettings = {
   maxWatchlistItems: 6,

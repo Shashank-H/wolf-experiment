@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { Elysia } from 'elysia';
 import { env } from '../config/env';
+import { DEFAULT_TRADING_RISK_LIMITS } from '../config/trading-risk';
 import { db } from '../db/client';
 import { tradingPreferences, userSettings, users } from '../db/schema';
 import { audit } from '../utils/audit';
@@ -58,7 +59,7 @@ export const authRoutes = new Elysia({ prefix: '/auth' })
       const passwordHash = await hashPassword(password);
       const [user] = await db.insert(users).values({ email, passwordHash }).returning();
       await db.insert(userSettings).values({ userId: user.id }).onConflictDoNothing();
-      await db.insert(tradingPreferences).values({ userId: user.id }).onConflictDoNothing();
+      await db.insert(tradingPreferences).values({ userId: user.id, ...DEFAULT_TRADING_RISK_LIMITS }).onConflictDoNothing();
       await audit('auth.register', { userId: user.id });
       const session = await createSession(user.id);
       setSessionCookie(cookie, session.token, session.expiresAt);
