@@ -264,20 +264,22 @@ Run morning research and persist structured AI output.
   - `prompt_versions`
   - `model_usage_logs`
   - `watchlist_items`
-  - `trade_candidates`
+  - transient trade candidates stored in `daily_research_sessions.rawPlan`
   - `gtt_candidates`
 
 - Build morning research job:
 
 ```txt
-fetch broker state
-fetch research/news
-fetch Kite quote context
-call LLM for structured daily plan
-validate JSON shape
+fetch broker state and user risk/context
+collect pre-market catalyst research/news
+small model classifies explicit NSE symbols and catalyst metadata
+rank catalyst-backed likely movers
+fetch Kite quote/snapshot context for validation
+call Stage 1 LLM for thesis/watchlist/transient trade ideas
+call Stage 2 LLM for grounded GTT drafts
+validate JSON shape, symbol grounding, and GTT price/risk context
 persist research session
 create watchlist items
-create trigger drafts
 create GTT candidates
 create notification
 ```
@@ -300,13 +302,13 @@ DELETE /watchlist/:id
   - summary-first market thesis
   - watchlist preview
   - trade/GTT/warning counts
-  - right-side deep-dive drawer for sector bias, full watchlist, trade candidates, GTT suggestions, sources, and risk warnings
+  - right-side deep-dive drawer for sector bias, full watchlist, likely mover/catalyst candidates, transient trade reasoning, GTT suggestions, sources, and risk warnings
 
 ### Deliverables
 
 - User can manually run morning research.
 - Structured research output is stored and visible.
-- Watchlist and initial trade/GTT candidates are created.
+- Watchlist and grounded GTT candidates are created; transient trade ideas remain session-level reasoning artifacts.
 
 ---
 
@@ -408,7 +410,7 @@ Add a global dry-run safety mode. When enabled, the normal MVP flow still runs, 
   - normal morning research honors the global dry-run setting
   - generated GTT candidates are marked `dry_run_approved`
   - simulated tracked orders are created from GTT candidates
-  - fall back to trade candidates when the model avoids GTT price levels
+  - do not create simulated trades from watchlist-only/transient trade candidates without grounded GTT price levels
   - all broker order/GTT placement APIs are blocked while dry-run mode is enabled
 - Implement dry-run EOD flow:
   - mark tracked symbols to latest market snapshots
@@ -647,7 +649,7 @@ Prepare for EC2 deployment with safe operations.
 ### Trading
 
 - `watchlist_items`
-- `trade_candidates`
+- transient trade candidates in `daily_research_sessions.rawPlan`
 - `trigger_rules`
 - `trigger_events`
 - `approval_requests`

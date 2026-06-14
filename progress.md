@@ -4,7 +4,7 @@
 Phase 5A complete; Phase 5B GTT-only live execution core plus manual and scheduled GTT revalidation implemented. Trading safety invariant enforced: no regular market/limit broker orders; triggers are internal-only; live broker actions are limited to two-leg Kite GTT place/modify/cancel with target + stoploss.
 
 ## Tasks
-- Added Phase 3 research persistence, providers, morning research APIs/UI, and fallback planner.
+- Added Phase 3 research persistence, providers, morning research APIs/UI, and pre-market catalyst research flow.
 - Added Phase 4 trigger/risk/approval persistence schema and Drizzle migrations.
 - Implemented strict Trigger JSON DSL validation and deterministic evaluator helper.
 - Implemented deterministic risk engine with persisted decisions and approval creation.
@@ -15,6 +15,9 @@ Phase 5A complete; Phase 5B GTT-only live execution core plus manual and schedul
 - Extracted morning research prompts into a dedicated prompt module.
 - Added configurable morning research limits and risk tolerance.
 - Added `/settings/research` API and server-side enforcement of research output caps.
+- Removed hardcoded production research seed symbols; morning research now discovers NSE equity likely movers from pre-market catalyst evidence.
+- Added small-model catalyst classification for source symbol extraction, catalyst type/direction/strength, and confidence.
+- Demoted NSE top gainers/losers to optional reactive confirmation/fallback instead of primary pre-market discovery.
 - Split trading controls into `/trading-settings` and app/provider configuration into obscured `/settings`.
 - Added home-page setup warnings with a CTA to app settings when API keys/auth are missing.
 - Replaced crowded top nav with a fixed vertical sidebar and settings gear shortcut.
@@ -70,6 +73,7 @@ Phase 5A complete; Phase 5B GTT-only live execution core plus manual and schedul
 - docs/implementation/phase-4-summary.md
 - docs/implementation/ui-settings-research-update.md
 - docs/implementation/phase-5a-dry-run-summary.md
+- docs/implementation/pre-market-catalyst-research.md
 
 ## Validation
 - `bun run typecheck` passes.
@@ -78,8 +82,8 @@ Phase 5A complete; Phase 5B GTT-only live execution core plus manual and schedul
 - Approvals only record manual decisions. No broker execution was added in Phase 4.
 - Trigger evaluation is implemented as a deterministic helper but is not yet wired to the market polling loop.
 - App/provider settings are no longer in primary navigation; users reach them via the sidebar gear or setup CTA.
-- Research detail is intentionally moved out of the main page into the slide-in drawer.
-- Dry-run PnL depends on available `market_snapshots`; if no quote exists for a symbol it remains tracked at entry/zero until market polling supplies prices.
+- Research detail is intentionally moved out of the main page into the slide-in drawer; likely mover/catalyst candidates can be inspected from session discovery metadata.
+- Dry-run PnL depends on available `market_snapshots`; if no quote exists for a symbol it remains untracked/waiting for market data rather than inventing entry prices.
 - `DRY_RUN_SCHEDULER_ENABLED=true` enables automated morning/EOD tracking and RCA jobs for users with global dry-run mode enabled.
 - Live broker placement is GTT-only: approved GTT candidates place two-leg Kite GTTs with target + stoploss; approved app approvals never place regular broker orders.
 - GTT revalidation is available manually and through the optional background scheduler; scheduler defaults off in local/dev envs.

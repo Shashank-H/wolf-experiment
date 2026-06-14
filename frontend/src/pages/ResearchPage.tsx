@@ -9,6 +9,17 @@ import type { ResearchBundle, ResearchResponse, SettingsResponse, WatchlistRespo
 
 type ResearchDrawerTab = 'overview' | 'agent' | 'gtt' | 'sources';
 
+type DiscoveredMover = {
+  exchange?: string;
+  tradingsymbol: string;
+  changePercent?: number;
+  volume?: number;
+  score?: number;
+  reason?: string;
+  catalystType?: string;
+  validationStatus?: string;
+};
+
 export function ResearchPage() {
   const [symbol, setSymbol] = useState('');
   const [reason, setReason] = useState('');
@@ -46,7 +57,6 @@ export function ResearchPage() {
   const hasKey = (provider: string, label?: string) => providerKeys.some((key) => key.provider === provider && (!label || key.label === label));
   const researchSetupIssues = [
     !hasKey('llm') ? 'LLM API key is required before morning research can run.' : null,
-    !hasKey('exa') && !hasKey('finnhub') ? 'Configure Exa or Finnhub before morning research can run.' : null,
   ].filter(Boolean);
   const researchSetupBlocked = researchSetupIssues.length > 0;
 
@@ -107,7 +117,7 @@ export function ResearchPage() {
 
       <Card title="Add manual watchlist item" marker="[+]">
         <form className="field-grid compact-form" onSubmit={(event) => { event.preventDefault(); if (symbol.trim()) addManual.mutate(); }}>
-          <Field label="Symbol"><input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} placeholder="RELIANCE" /></Field>
+          <Field label="Symbol"><input value={symbol} onChange={(event) => setSymbol(event.target.value.toUpperCase())} placeholder="NSE equity symbol" /></Field>
           <Field label="Reason"><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Manual context" /></Field>
           <button type="submit" disabled={addManual.isPending || !symbol.trim()}>Add item</button>
         </form>
@@ -120,6 +130,7 @@ export function ResearchPage() {
 }
 
 function ResearchDrawer({ bundle, activeWatchlist, open, tab, onTab, onClose, onDeleteWatchlist, deleting }: { bundle: ResearchBundle; activeWatchlist: WatchlistResponse['watchlist']; open: boolean; tab: ResearchDrawerTab; onTab: (tab: ResearchDrawerTab) => void; onClose: () => void; onDeleteWatchlist: (id: string) => void; deleting: boolean }) {
+  const discoveredMovers = getDiscoveredMovers(bundle);
   return (
     <>
       <button className={open ? 'drawer-scrim open' : 'drawer-scrim'} aria-label="Close research details" onClick={onClose} tabIndex={open ? 0 : -1} />
@@ -134,6 +145,8 @@ function ResearchDrawer({ bundle, activeWatchlist, open, tab, onTab, onClose, on
 
         {tab === 'overview' && (
           <div className="drawer-section">
+            <h2>Likely movers / catalyst candidates</h2>
+            {discoveredMovers.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Catalyst</th><th>Validation</th><th>Score</th><th>Reason</th></tr></thead><tbody>{discoveredMovers.map((item) => <tr key={`${item.exchange ?? 'NSE'}:${item.tradingsymbol}`}><td><strong>{item.exchange ?? 'NSE'}:{item.tradingsymbol}</strong></td><td>{item.catalystType ?? '—'}</td><td>{item.validationStatus ?? (item.changePercent === undefined && item.volume === undefined ? 'watchlist only' : 'market data seen')}</td><td>{item.score === undefined ? '—' : item.score.toFixed(1)}</td><td>{item.reason ?? 'Catalyst-backed research candidate'}</td></tr>)}</tbody></table></div> : <EmptyState>No catalyst candidates saved for this session.</EmptyState>}
             <h2>Sector bias</h2>
             {bundle.session.sectorBias.length ? bundle.session.sectorBias.map((item) => <div className="detail-block" key={`${item.sector}-${item.bias}`}><strong>{item.sector} [{item.bias}]</strong><p>{item.reason}</p></div>) : <EmptyState>No sector bias generated.</EmptyState>}
             <h2>Risk warnings</h2>
@@ -151,6 +164,42 @@ function ResearchDrawer({ bundle, activeWatchlist, open, tab, onTab, onClose, on
       </aside>
     </>
   );
+}
+
+function getDiscoveredMovers(bundle: ResearchBundle): DiscoveredMover[] {
+  const discovery = bundle.session.rawPlan?.discovery;
+  const candidates: unknown[] = Array.isArray(discovery) ? discovery : discovery && typeof discovery === 'object' && Array.isArray((discovery as Record<string, unknown>).candidates) ? (discovery as Record<string, unknown>).candidates as unknown[] : [];
+  return candidates.flatMap((candidate: unknown): DiscoveredMover[] => {
+    if (!candidate || typeof candidate !== 'object') return [];
+    const record = candidate as Record<string, unknown>;
+    const tradingsymbol = typeof record.tradingsymbol === 'string' ? record.tradingsymbol : typeof record.symbol === 'string' ? record.symbol : '';
+    if (!tradingsymbol) return [];
+    const ranking = record.ranking && typeof record.ranking === 'object' ? record.ranking as Record<string, unknown> : {};
+    const reasons = Array.isArray(ranking.reasons) ? ranking.reasons.filter((item): item is string => typeof item === 'string') : [];
+    return [{
+      exchange: typeof record.exchange === 'string' ? record.exchange : undefined,
+      tradingsymbol,
+      changePercent: finiteNumber(record.changePercent),
+      volume: finiteNumber(record.volume),
+      score: finiteNumber(record.score) ?? finiteNumber(ranking.score),
+      reason: typeof record.reason === 'string' ? record.reason : reasons[0],
+      catalystType: typeof record.catalystType === 'string' ? record.catalystType : undefined,
+      validationStatus: typeof record.validationStatus === 'string' ? record.validationStatus.replace(/_/g, ' ') : undefined,
+    }];
+  }).slice(0, 8);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function formatPercent(value: number | undefined): string {
+  return value === undefined ? '—' : `${value.toFixed(2)}%`;
+}
+
+function formatNumber(value: number | undefined): string {
+  return value === undefined ? '—' : new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(value);
 }
 
 function AgentConversationView({ bundle }: { bundle: ResearchBundle }) {

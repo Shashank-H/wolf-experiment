@@ -4,8 +4,8 @@
 
 Rework morning research into a two-stage LLM pipeline:
 
-1. Stage 1 generates watchlist, market thesis, risk warnings, and transient trade candidates.
-2. Stage 2 takes the selected trade candidates from Stage 1 and generates persisted GTT drafts.
+1. Stage 1 generates watchlist, market thesis, risk warnings, and transient trade candidates from catalyst-backed likely movers.
+2. Stage 2 takes the selected trade candidates from Stage 1 and generates persisted GTT drafts only when price/risk context is grounded.
 
 Trade candidates will not be stored in a dedicated DB table. They will live only inside the research session payload and agent conversation trace. The `trade_candidates` table and related schema references will be removed.
 
@@ -13,13 +13,17 @@ Trade candidates will not be stored in a dedicated DB table. They will live only
 
 ### Backend behavior
 
-- Split `runMorningResearch` into two explicit planning stages:
+- Split `runMorningResearch` into explicit discovery plus two planning stages:
+  - Pre-stage discovery collects pre-market catalyst sources, small-model classifications, and likely-mover candidates.
   - Stage 1 prompt returns `marketThesis`, `sectorBias`, `watchlist`, `tradeCandidates`, `riskWarnings`.
   - Stage 2 prompt consumes the Stage 1 result and returns `gttCandidates` only.
 - Use a separate model call for Stage 2.
 - Selection policy:
+  - Stage 1 candidates must be grounded in discovered catalyst candidates, broker context, or source symbols.
+  - Watchlist-only catalyst candidates may lack price data, but must be labelled as needing validation.
   - The model auto-selects which Stage 1 trade candidates advance to Stage 2.
   - Persisted GTT count is limited by `maxGttCandidates`.
+  - Stage 2 must return no GTT for candidates lacking reference price, target, stop-loss, and risk context.
   - Transient trade-candidate count is capped to a soft multiple of `maxGttCandidates`. Default: `3 x maxGttCandidates`, with a minimum floor so low GTT counts still allow a few ideas.
 - Persist Stage 1 trade candidates only in:
   - `daily_research_sessions.rawPlan`

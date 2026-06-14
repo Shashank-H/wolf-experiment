@@ -1,3 +1,51 @@
+export type DiscoveryEvidence = {
+  provider: string;
+  title?: string;
+  url?: string;
+  summary?: string;
+  publishedAt?: string;
+  raw?: Record<string, unknown>;
+};
+
+export type CatalystType = 'earnings' | 'order_win' | 'mna' | 'regulatory' | 'corporate_action' | 'brokerage_rating' | 'sector_cue' | 'global_cue' | 'management_commentary' | 'litigation_or_risk' | 'other_news';
+
+export type CatalystDirection = 'positive' | 'negative' | 'mixed' | 'unknown';
+
+export type CandidateRankingMetadata = {
+  score: number;
+  catalystStrength?: number;
+  sourceConfidence?: number;
+  recencyScore?: number;
+  sentimentClarity?: number;
+  tradeabilityScore?: number;
+  moveScore?: number;
+  liquidityScore?: number;
+  evidenceScore?: number;
+  riskScore?: number;
+  reasons: string[];
+};
+
+export type MarketCandidate = {
+  exchange: string;
+  tradingsymbol: string;
+  instrumentType: 'EQ';
+  lastPrice?: number;
+  referencePrice?: number;
+  changePercent?: number;
+  volume?: number;
+  turnover?: number;
+  sector?: string;
+  sentiment?: 'bullish' | 'bearish' | 'neutral' | 'unknown';
+  catalystType?: CatalystType;
+  catalystDirection?: CatalystDirection;
+  reactiveSignal?: boolean;
+  validationStatus?: 'watchlist_only' | 'price_validated' | 'liquidity_validated' | 'gtt_ready';
+  discoveredBy: string[];
+  evidence: DiscoveryEvidence[];
+  ranking?: CandidateRankingMetadata;
+  raw?: Record<string, unknown>;
+};
+
 export type ResearchSource = {
   provider: string;
   title: string;
@@ -12,7 +60,16 @@ export type ResearchQuery = {
   query: string;
   symbols?: string[];
   limit?: number;
+  lookbackDays?: number;
 };
+
+export type MarketDiscoveryQuery = {
+  limit: number;
+};
+
+export interface MarketDiscoveryProvider {
+  discover(input: MarketDiscoveryQuery): Promise<MarketCandidate[]>;
+}
 
 export interface ResearchProvider {
   search(input: ResearchQuery): Promise<ResearchSource[]>;

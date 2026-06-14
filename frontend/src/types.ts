@@ -74,6 +74,7 @@ export type ResearchSession = {
   sectorBias: Array<{ sector: string; bias: string; reason: string }>;
   riskWarnings: string[];
   model?: string | null;
+  rawPlan?: Record<string, unknown>;
   agentConversation?: AgentConversationTrace;
   createdAt: string;
 };

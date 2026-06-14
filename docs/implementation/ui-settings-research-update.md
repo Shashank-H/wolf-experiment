@@ -65,12 +65,13 @@ Added `/trading-settings` with:
   - Trades
   - GTT
   - Sources
+- The overview drawer can show "Likely movers / catalyst candidates" from `session.rawPlan.discovery.candidates`, including catalyst type, validation status, score, and rationale when present.
 
 ## Backend Changes
 
 ### Configurable Research Prompt
 
-Morning research prompts are now managed separately in `backend/src/prompts/morning-research.ts` instead of being embedded directly in service code.
+Morning research prompts are now managed separately in `backend/src/prompts/morning-research.ts` instead of being embedded directly in service code. The service also performs a pre-prompt catalyst discovery pass and passes `discoveredCandidates` to the prompt context.
 
 Configurable prompt inputs:
 
@@ -100,10 +101,12 @@ The endpoint validates and stores research settings in `user_settings.provider_c
 
 ### Server-Side Enforcement
 
-Research candidate limits are enforced in two places:
+Research candidate limits and grounding are enforced in multiple places:
 
-1. Prompt instructions sent to the LLM.
-2. Server-side normalization after LLM output is parsed.
+1. Pre-market catalyst discovery settings limit source fan-out and candidate shortlist size.
+2. Prompt instructions sent to the LLM.
+3. Server-side normalization after LLM output is parsed.
+4. GTT validation rejects candidates without grounded reference price, target, and stop-loss context.
 
 Fallback research generation also respects configured limits and risk tolerance.
 

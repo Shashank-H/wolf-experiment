@@ -2,7 +2,7 @@
 
 ## Scope
 
-Implemented the first executable Phase 3 slice: provider interfaces/adapters, morning research orchestration, persistence, APIs, and a frontend research screen. Research output is deliberately non-executing; generated trade/GTT candidates remain drafts until later trigger, risk, approval, and execution phases are implemented.
+Implemented the first executable Phase 3 slice: provider interfaces/adapters, morning research orchestration, persistence, APIs, and a frontend research screen. Research output is deliberately non-executing; transient trade ideas remain session-level reasoning artifacts and generated GTT candidates remain drafts until later trigger, risk, approval, and execution phases are implemented.
 
 ## Backend Completed
 
@@ -10,7 +10,7 @@ Implemented the first executable Phase 3 slice: provider interfaces/adapters, mo
   - `daily_research_sessions`
   - `research_sources`
   - `watchlist_items`
-  - `trade_candidates`
+  - transient trade candidates in `daily_research_sessions.rawPlan`
   - `gtt_candidates`
 - Added research provider abstractions:
   - `ResearchProvider`
@@ -20,11 +20,12 @@ Implemented the first executable Phase 3 slice: provider interfaces/adapters, mo
   - `FinnhubProvider`
   - `OpenAiCompatibleProvider`
 - Added morning research service:
-  - loads broker holdings/positions context
-  - gathers Exa/Finnhub sources when keys are configured
-  - calls an OpenAI-compatible JSON LLM when configured
-  - falls back to a deterministic conservative plan when keys/providers are unavailable
-  - persists session, sources, watchlist, trade candidates, and GTT drafts
+  - loads broker holdings/positions context for exposure/risk context
+  - gathers pre-market catalyst sources from Exa/Finnhub when keys are configured
+  - uses the small model to classify catalyst type/direction/strength and extract explicit NSE equity symbols
+  - ranks catalyst-backed likely movers instead of hardcoded/default symbols or after-the-fact top movers
+  - calls OpenAI-compatible JSON LLM stages for ideas and grounded GTT drafts
+  - persists session, sources, watchlist, transient trade reasoning, and GTT drafts
   - records audit events
 - Added APIs:
   - `POST /research/run-morning`
@@ -43,7 +44,8 @@ Implemented the first executable Phase 3 slice: provider interfaces/adapters, mo
   - sector bias
   - risk warnings
   - saved sources
-  - trade candidates
+  - likely mover/catalyst candidates
+  - transient trade reasoning
   - GTT drafts
   - today watchlist
   - manual watchlist add/delete
@@ -58,5 +60,5 @@ Implemented the first executable Phase 3 slice: provider interfaces/adapters, mo
 - Add scheduled morning job runner.
 - Add richer market-regime and sector-bias snapshot tables if needed beyond current JSON session fields.
 - Add `agent_runs`, `agent_messages`, `prompt_versions`, and `model_usage_logs` for Langfuse-like internal tracing.
-- Improve provider normalization for NSE/BSE symbols and Indian-market specific news sources.
+- Add dedicated exchange corporate-announcements and earnings-calendar providers.
 - Add UI history for prior research sessions.

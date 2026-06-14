@@ -260,15 +260,23 @@ export interface MarketDataProvider {
 ```txt
 Exa
 Finnhub
+Small-model catalyst classifier
+Optional NSE mover confirmation/fallback
 ```
+
+Morning research is **pre-market catalyst-first**. Exa and Finnhub collect broad and focused source evidence about likely movers, events, earnings, order wins, approvals, corporate actions, ratings, and sector/global cues. A small LLM classifies sources and extracts explicit NSE cash-equity symbols before the main research model runs.
+
+NSE top gainers/losers are not primary pre-market discovery. `NseMarketMoverProvider` is retained only as explicit after-open/fallback confirmation when enabled.
 
 ### Research Adapter Interface
 
 ```ts
 export interface ResearchProvider {
   search(input: ResearchSearchInput): Promise<ResearchResult[]>;
-  getTickerNews(input: TickerNewsInput): Promise<NewsItem[]>;
-  getMarketNews(input: MarketNewsInput): Promise<NewsItem[]>;
+}
+
+export interface MarketDiscoveryProvider {
+  discover(input: MarketDiscoveryQuery): Promise<MarketCandidate[]>;
 }
 ```
 
@@ -281,7 +289,9 @@ Alpha Vantage
 MarketAux
 Financial Modeling Prep
 RSS feeds
-Exchange filings
+Exchange filings/corporate announcements
+Earnings calendars
+Pre-open market data
 ```
 
 ---
@@ -451,16 +461,17 @@ Exact time configurable.
 
 ```txt
 user risk preferences
+symbol blacklist
 previous RCA learnings
-holdings
-positions
+holdings/positions for exposure context
 available capital
 watchlist history
-market news
-ticker news
+pre-market catalyst news
+company/ticker news
 sector news
 global context
-Kite quote data
+Kite quote/snapshot data for validation
+optional reactive NSE mover confirmation
 ```
 
 ### Outputs
@@ -469,9 +480,8 @@ Kite quote data
 market regime
 sector bias
 daily watchlist
-trade candidates
-trigger rules
-GTT suggestions
+transient trade ideas in session payload
+GTT suggestions only when price/risk grounded
 risk warnings
 capital allocation suggestion
 no-trade recommendation if applicable
@@ -482,26 +492,30 @@ no-trade recommendation if applicable
 ```txt
 morning_research job
     ↓
-fetch broker state
+fetch user risk/context and broker state
     ↓
-fetch research data from Exa/Finnhub
+collect pre-market catalyst sources from Exa/Finnhub
     ↓
-fetch quotes from Kite
+small model classifies catalyst type/direction/strength and extracts explicit NSE equity symbols
     ↓
-LLM generates structured daily plan
+normalize, dedupe, blacklist-filter, and rank likely-mover candidates
     ↓
-risk engine pre-validates
+enrich shortlisted candidates with Kite quote/snapshot data when available
     ↓
-store daily_research_session
+collect focused evidence for shortlisted candidates
     ↓
-create watchlist_items
+Stage 1 LLM generates thesis, sector bias, watchlist, and transient trade ideas
     ↓
-create trigger_rules
+Stage 2 LLM generates GTT drafts only for candidates with grounded price/risk context
     ↓
-create pending_gtt_candidates
+server validates schema, symbol grounding, and GTT price/risk requirements
+    ↓
+store daily_research_session, sources, watchlist_items, and pending_gtt_candidates
     ↓
 notify user
 ```
+
+Details and edge cases are documented in [`docs/implementation/pre-market-catalyst-research.md`](./implementation/pre-market-catalyst-research.md).
 
 ---
 
@@ -934,7 +948,7 @@ model_usage_logs
 
 ```txt
 watchlist_items
-trade_candidates
+transient trade candidates in daily_research_sessions.rawPlan
 trigger_rules
 trigger_events
 approval_requests

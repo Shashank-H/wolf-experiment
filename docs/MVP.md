@@ -172,14 +172,19 @@ All providers must use adapter-based architecture.
 
 ### MVP
 
-* Exa
-* Finnhub
+* Exa for broad/focused pre-market catalyst search
+* Finnhub for market/company news
+* Small-model catalyst classification for explicit NSE symbol extraction and catalyst metadata
+* Optional NSE top-mover confirmation/fallback only when explicitly enabled
 
 ### Future
 
 * Tavily
 * Perplexity
 * MarketAux
+* Exchange corporate announcements
+* Earnings calendars
+* Pre-open market data
 * Others
 
 ---
@@ -249,7 +254,7 @@ Polling should only monitor:
 
 # Morning Research Agent
 
-Runs before market open.
+Runs before market open and estimates **likely NSE cash-equity movers before the fact** using catalyst evidence. It should not use after-the-fact top gainers/losers as the primary research universe.
 
 ## Responsibilities
 
@@ -257,12 +262,20 @@ Generate:
 
 * market regime
 * sector bias
-* watchlist
-* trigger rules
-* trade candidates
-* GTT suggestions
+* catalyst-backed watchlist
+* transient trade ideas in the research session payload
+* GTT suggestions only when price/risk context is grounded
 * capital allocation suggestions
 * no-trade recommendations
+
+## Discovery rules
+
+* No production hardcoded default symbols.
+* Primary discovery comes from fresh catalyst/news/event sources.
+* A small model extracts explicit NSE equity symbols and classifies catalyst type/direction/strength.
+* NSE top movers are optional confirmation/fallback, not primary pre-market discovery.
+* Stage 1 may include watchlist-only candidates without price validation.
+* Stage 2 must not create GTT drafts without reference price, target, stop-loss, and risk grounding.
 
 ---
 

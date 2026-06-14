@@ -1,12 +1,13 @@
 import { and, desc, eq } from 'drizzle-orm';
 import { db } from '../db/client';
-import { apiKeys, dailyResearchSessions, gttCandidates, holdingsSnapshots, positions, rcaReports, researchSources, tradingPreferences, userSettings, watchlistItems } from '../db/schema';
+import { apiKeys, dailyResearchSessions, gttCandidates, holdingsSnapshots, marketSnapshots, positions, rcaReports, researchSources, tradingPreferences, userSettings, watchlistItems } from '../db/schema';
 import { ExaProvider } from '../providers/research/ExaProvider';
 import { FinnhubProvider } from '../providers/research/FinnhubProvider';
+import { NseMarketMoverProvider } from '../providers/research/NseMarketMoverProvider';
 import { OpenAiCompatibleProvider } from '../providers/research/OpenAiCompatibleProvider';
 import { DEFAULT_MORNING_RESEARCH_SETTINGS, DEFAULT_TRADING_RISK_SETTINGS, buildMorningResearchGttMessages, buildMorningResearchIdeasMessages, transientTradeCandidateLimit } from '../prompts/morning-research';
 import type { MorningResearchSettings, ResearchRiskTolerance, TradingRiskSettings } from '../prompts/morning-research';
-import type { AgentConversationTrace, LlmMessage, MorningResearchGttPlan, MorningResearchIdeasPlan, MorningResearchPlan, ResearchSource } from '../providers/research/types';
+import type { AgentConversationTrace, CatalystDirection, CatalystType, LlmMessage, MarketCandidate, MorningResearchGttPlan, MorningResearchIdeasPlan, MorningResearchPlan, ResearchSource } from '../providers/research/types';
 import { audit } from '../utils/audit';
 import { decryptSecret } from '../utils/crypto';
 
@@ -23,7 +24,41 @@ type BrokerContext = {
   positions: Array<{ exchange: string; tradingsymbol: string; product: string; quantity: string; pnl: string }>;
 };
 
-const DEFAULT_SYMBOLS = ['NIFTY 50', 'BANKNIFTY', 'RELIANCE', 'HDFCBANK', 'INFY'];
+type DiscoverySettings = {
+  candidateShortlistSize: number;
+  broadSourceLimit: number;
+  focusedSourceLimit: number;
+  sourceLimit: number;
+  snapshotLimit: number;
+  promptSourceLimit: number;
+  freshnessHours: number;
+  newsLookbackDays: number;
+  minVolume: number;
+  enableReactiveMoverConfirmation: boolean;
+};
+
+const DEFAULT_DISCOVERY_SETTINGS: DiscoverySettings = {
+  // Number of catalyst candidates that survive filtering/ranking and are passed to the LLM.
+  candidateShortlistSize: 12,
+  // Max broad pre-market news/search sources to collect before symbol extraction.
+  broadSourceLimit: 10,
+  // Max focused follow-up sources to collect for each shortlisted candidate.
+  focusedSourceLimit: 3,
+  // Max total deduped research sources persisted and supplied downstream.
+  sourceLimit: 24,
+  // Max recent quote snapshots to inspect when enriching catalyst candidates with price/liquidity context.
+  snapshotLimit: 500,
+  // Max sources to include directly in the final research prompt context.
+  promptSourceLimit: 12,
+  // Freshness window for catalyst evidence and market snapshots.
+  freshnessHours: 36,
+  // Lookback window used when querying news/search providers.
+  newsLookbackDays: 7,
+  // Minimum volume for a candidate to count as liquidity-validated for GTT readiness.
+  minVolume: 1,
+  // Optional after-open/fallback confirmation from reactive NSE top movers; disabled for pre-market primary discovery.
+  enableReactiveMoverConfirmation: false,
+};
 
 export async function runMorningResearch(userId: string, options: { dryRun?: boolean } = {}): Promise<MorningResearchResult> {
   const tradeDate = indianTradeDate();
@@ -38,20 +73,22 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
   const providerConfig = settings[0]?.providerConfig ?? {};
   const researchSettings = parseResearchSettings(providerConfig);
   const tradingRiskSettings = parseTradingRiskSettings(preferences[0]);
+  const discoverySettings = parseDiscoverySettings(providerConfig);
   const providerWarnings: string[] = [];
-  const symbols = [...new Set([...context.holdings.map((row) => row.tradingsymbol), ...context.positions.map((row) => row.tradingsymbol), ...DEFAULT_SYMBOLS])].slice(0, 16);
   const model = typeof providerConfig.mediumModel === 'string' && providerConfig.mediumModel.trim() ? providerConfig.mediumModel.trim() : 'gpt-4o-mini';
+  const smallModel = typeof providerConfig.smallModel === 'string' && providerConfig.smallModel.trim() ? providerConfig.smallModel.trim() : 'gpt-4o-mini';
   assertResearchPreflight(secrets);
-  const { sources, errors: sourceErrors } = await collectSources(symbols, secrets);
+  const discovery = await discoverMarketCandidates({ userId, secrets, settings: discoverySettings, symbolBlacklist: preferences[0]?.symbolBlacklist ?? [], smallModel, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl) });
+  const { candidates, sources, errors: sourceErrors } = discovery;
   providerWarnings.push(...sourceErrors);
   let plan: MorningResearchPlan;
   let conversation: AgentConversationTrace;
   try {
     if (!sources.length) throw new Error(`Morning research requires at least one successful external source: ${sourceErrors.join('; ') || 'no sources returned'}`);
-    ({ plan, conversation } = await buildPlan({ context, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, tradingRiskSettings, rcaLearnings }));
+    ({ plan, conversation } = await buildPlan({ context, discoveredCandidates: candidates, sources, model, llmApiKey: secrets.llmApiKey, llmBaseUrl: stringConfig(providerConfig.llmBaseUrl), providerWarnings, researchSettings, tradingRiskSettings, discoverySettings, rcaLearnings }));
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Morning research failed';
-    const session = await persistFailedResearchSession({ userId, tradeDate, isDryRun, model, message, providerWarnings, context, sources });
+    const session = await persistFailedResearchSession({ userId, tradeDate, isDryRun, model, message, providerWarnings, context, discoveredCandidates: candidates, sources });
     await audit('research.morning.failed', { userId, entityType: 'daily_research_session', entityId: session.id, metadata: { tradeDate, error: message, sources: sources.length } });
     throw error;
   }
@@ -64,7 +101,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
     sectorBias: plan.sectorBias,
     riskWarnings: [...plan.riskWarnings, ...providerWarnings],
     model,
-    rawPlan: plan as unknown as Record<string, unknown>,
+    rawPlan: { ...(plan as unknown as Record<string, unknown>), discovery: discoveryMetadata(candidates, sourceErrors, discoverySettings) },
     agentConversation: conversation as unknown as Record<string, unknown>,
     isDryRun,
     dryRunStatus: isDryRun ? 'active' : null,
@@ -77,7 +114,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
       sectorBias: plan.sectorBias,
       riskWarnings: [...plan.riskWarnings, ...providerWarnings],
       model,
-      rawPlan: plan as unknown as Record<string, unknown>,
+      rawPlan: { ...(plan as unknown as Record<string, unknown>), discovery: discoveryMetadata(candidates, sourceErrors, discoverySettings) },
       agentConversation: conversation as unknown as Record<string, unknown>,
       isDryRun,
       dryRunStatus: isDryRun ? 'active' : null,
@@ -104,7 +141,7 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
       summary: source.summary,
       symbols: source.symbols,
       publishedAt: source.publishedAt ? new Date(source.publishedAt) : null,
-      raw: source.raw ?? {},
+      raw: { ...(source.raw ?? {}), discovery: { candidateSymbols: candidates.filter((candidate) => source.symbols.includes(candidate.tradingsymbol)).map((candidate) => `${candidate.exchange}:${candidate.tradingsymbol}`) } },
     }))).returning()
     : [];
 
@@ -224,14 +261,155 @@ async function loadSecrets(userId: string) {
 
 function assertResearchPreflight(secrets: Awaited<ReturnType<typeof loadSecrets>>) {
   if (!secrets.llmApiKey) throw new Error('LLM API key is required before morning research can start');
-  if (!secrets.exaApiKey && !secrets.finnhubApiKey) throw new Error('At least one research source provider is required before morning research can start: configure Exa or Finnhub');
 }
 
-async function collectSources(symbols: string[], secrets: Awaited<ReturnType<typeof loadSecrets>>): Promise<{ sources: ResearchSource[]; errors: string[] }> {
+async function discoverMarketCandidates(input: { userId: string; secrets: Awaited<ReturnType<typeof loadSecrets>>; settings: DiscoverySettings; symbolBlacklist: string[]; smallModel: string; llmBaseUrl?: string }): Promise<{ candidates: MarketCandidate[]; sources: ResearchSource[]; errors: string[] }> {
+  const catalyst = await discoverCatalystCandidates(input);
+  const catalystCandidates = rankCandidates(filterCandidates(dedupeCandidates(extractCandidatesFromSources(catalyst.sources)), input.symbolBlacklist, input.settings, { requirePriceAndLiquidity: false }), input.settings);
+  const enrichedCandidates = enrichCandidatesWithSnapshots(catalystCandidates, await loadRecentSnapshotCandidates(input.userId, input.settings));
+  const focused = enrichedCandidates.length ? await collectSources({ secrets: input.secrets, settings: input.settings, candidates: enrichedCandidates, smallModel: input.smallModel, llmBaseUrl: input.llmBaseUrl }) : { sources: [], errors: [] };
+  const focusedExtracted = extractCandidatesFromSources(focused.sources);
+  const ranked = rankCandidates(filterCandidates(dedupeCandidates([...enrichedCandidates, ...focusedExtracted]), input.symbolBlacklist, input.settings, { requirePriceAndLiquidity: false }), input.settings);
+  const confirmed = await maybeConfirmWithReactiveMovers(ranked, input.settings);
+  const allSources = mergeSources([...candidateSources(confirmed), ...catalyst.sources, ...focused.sources], input.settings.sourceLimit);
+  return { candidates: attachCandidateSymbolsToSourcesToCandidates(confirmed, allSources), sources: attachCandidateSymbolsToSources(allSources, confirmed), errors: [...catalyst.errors, ...focused.errors] };
+}
+
+const PRE_MARKET_CATALYST_QUERIES = [
+  'NSE stocks in news today India pre market',
+  'Indian stocks likely to move today results order win approval',
+  'stocks to watch today NSE earnings results',
+  'NSE companies order wins approvals acquisitions today',
+  'brokerage upgrade downgrade Indian stocks today',
+  'Indian sectors in focus today global cues crude rupee rates',
+];
+
+async function discoverCatalystCandidates(input: { secrets: Awaited<ReturnType<typeof loadSecrets>>; settings: DiscoverySettings; smallModel: string; llmBaseUrl?: string }): Promise<{ sources: ResearchSource[]; errors: string[] }> {
+  const tasks: Array<{ provider: string; promise: Promise<ResearchSource[]> }> = [];
+  if (input.secrets.exaApiKey) {
+    const perQueryLimit = Math.max(2, Math.ceil(input.settings.broadSourceLimit / PRE_MARKET_CATALYST_QUERIES.length));
+    for (const query of PRE_MARKET_CATALYST_QUERIES) {
+      tasks.push({ provider: 'exa', promise: new ExaProvider(input.secrets.exaApiKey).search({ query, limit: perQueryLimit, lookbackDays: input.settings.newsLookbackDays }) });
+    }
+  }
+  if (input.secrets.finnhubApiKey) {
+    tasks.push({ provider: 'finnhub', promise: new FinnhubProvider(input.secrets.finnhubApiKey).search({ query: 'India market news stocks in focus catalysts', limit: input.settings.broadSourceLimit, lookbackDays: input.settings.newsLookbackDays }) });
+  }
+  const settled = await Promise.allSettled(tasks.map((task) => task.promise));
+  const sources: ResearchSource[] = [];
+  const errors: string[] = [];
+  for (const [index, result] of settled.entries()) {
+    const provider = tasks[index]?.provider ?? 'research';
+    if (result.status === 'fulfilled') {
+      if (result.value.length) sources.push(...result.value);
+      else errors.push(`${provider} returned no catalyst sources`);
+    } else {
+      errors.push(`${provider} failed: ${result.reason instanceof Error ? result.reason.message : 'Research provider failed'}`);
+    }
+  }
+  const classified = await classifySourcesWithSmallModel(sources, input.secrets.llmApiKey, input.smallModel, input.llmBaseUrl);
+  return { sources: mergeSources(classified, input.settings.sourceLimit), errors };
+}
+
+type CatalystClassification = {
+  symbols: string[];
+  type: CatalystType;
+  direction: CatalystDirection;
+  strength: number;
+  confidence?: number;
+  rationale?: string;
+};
+
+async function classifySourcesWithSmallModel(sources: ResearchSource[], llmApiKey: string | null, smallModel: string, llmBaseUrl?: string): Promise<ResearchSource[]> {
+  if (!sources.length) return sources;
+  if (!llmApiKey) return sources.map((source) => attachFallbackClassification(source));
+  try {
+    const provider = new OpenAiCompatibleProvider(llmApiKey, llmBaseUrl);
+    const json = await provider.generateJson({
+      model: smallModel,
+      temperature: 0,
+      messages: [
+        { role: 'system', content: 'Classify Indian equity news for a pre-market research agent. Return strict JSON only. Extract explicit NSE cash-equity symbols/tickers mentioned by the source. Do not infer a ticker if the source does not mention one. Classify catalystType as one of earnings, order_win, mna, regulatory, corporate_action, brokerage_rating, sector_cue, global_cue, management_commentary, litigation_or_risk, other_news. Classify direction as positive, negative, mixed, or unknown. Strength is an integer 0-35 based on likely next-session move impact.' },
+        { role: 'user', content: JSON.stringify({ sources: sources.map((source, id) => ({ id, provider: source.provider, title: source.title, summary: source.summary, symbols: source.symbols, publishedAt: source.publishedAt })) }) },
+      ],
+    });
+    const rows = Array.isArray(json.classifications) ? json.classifications : [];
+    const byId = new Map<number, CatalystClassification>();
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      const record = row as Record<string, unknown>;
+      const id = Number(record.id);
+      if (!Number.isInteger(id)) continue;
+      byId.set(id, {
+        symbols: stringArray(record.symbols).map(normalizeSymbol).filter(isNseEquitySymbol),
+        type: catalystTypeValue(record.catalystType),
+        direction: catalystDirectionValue(record.direction),
+        strength: boundedNumber(record.strength, 0, 35, 8),
+        confidence: boundedNumber(record.confidence, 0, 1, 0.5),
+        rationale: typeof record.rationale === 'string' ? record.rationale : undefined,
+      });
+    }
+    return sources.map((source, id) => attachClassification(source, byId.get(id) ?? fallbackClassification(source)));
+  } catch {
+    return sources.map((source) => attachFallbackClassification(source));
+  }
+}
+
+function attachClassification(source: ResearchSource, classification: CatalystClassification): ResearchSource {
+  return {
+    ...source,
+    symbols: [...new Set([...source.symbols.map(normalizeSymbol), ...classification.symbols].filter(isNseEquitySymbol))],
+    raw: { ...(source.raw ?? {}), catalyst: classification },
+  };
+}
+
+function attachFallbackClassification(source: ResearchSource): ResearchSource {
+  return attachClassification(source, fallbackClassification(source));
+}
+
+function fallbackClassification(source: ResearchSource): CatalystClassification {
+  return { symbols: source.symbols.map(normalizeSymbol).filter(isNseEquitySymbol), type: 'other_news', direction: 'unknown', strength: 8, confidence: 0.1, rationale: 'Small-model classification unavailable; using provider symbols only.' };
+}
+
+async function maybeConfirmWithReactiveMovers(candidates: MarketCandidate[], settings: DiscoverySettings): Promise<MarketCandidate[]> {
+  if (!settings.enableReactiveMoverConfirmation) return candidates;
+  try {
+    const reactive = await new NseMarketMoverProvider().discover({ limit: settings.candidateShortlistSize });
+    const reactiveBySymbol = new Map(reactive.map((candidate) => [candidate.tradingsymbol, candidate]));
+    return candidates.map((candidate) => {
+      const match = reactiveBySymbol.get(candidate.tradingsymbol);
+      if (!match) return candidate;
+      return {
+        ...candidate,
+        lastPrice: candidate.lastPrice ?? match.lastPrice,
+        referencePrice: candidate.referencePrice ?? match.referencePrice,
+        changePercent: candidate.changePercent ?? match.changePercent,
+        volume: Math.max(candidate.volume ?? 0, match.volume ?? 0) || candidate.volume,
+        turnover: Math.max(candidate.turnover ?? 0, match.turnover ?? 0) || candidate.turnover,
+        reactiveSignal: true,
+        discoveredBy: [...new Set([...candidate.discoveredBy, 'nse_market_movers_confirmation'])],
+        evidence: [...candidate.evidence, ...match.evidence.map((item) => ({ ...item, provider: 'nse_market_movers_confirmation' }))].slice(0, 8),
+        ranking: candidate.ranking ? { ...candidate.ranking, reasons: [...candidate.ranking.reasons, 'reactive mover confirmation after open'] } : candidate.ranking,
+      };
+    });
+  } catch {
+    return candidates;
+  }
+}
+
+async function collectSources(input: { secrets: Awaited<ReturnType<typeof loadSecrets>>; settings: DiscoverySettings; candidates: MarketCandidate[]; smallModel?: string; llmBaseUrl?: string }): Promise<{ sources: ResearchSource[]; errors: string[] }> {
   const tasks: Array<{ provider: string; promise: Promise<ResearchSource[]> }> = [];
   const errors: string[] = [];
-  if (secrets.exaApiKey) tasks.push({ provider: 'exa', promise: new ExaProvider(secrets.exaApiKey).search({ query: `Indian equity market news ${symbols.slice(0, 8).join(' ')}`, symbols, limit: 8 }) });
-  if (secrets.finnhubApiKey) tasks.push({ provider: 'finnhub', promise: new FinnhubProvider(secrets.finnhubApiKey).search({ query: 'market news', symbols: symbols.filter((symbol) => /^[A-Z.]+$/.test(symbol)), limit: 8 }) });
+  for (const candidate of input.candidates.slice(0, input.settings.candidateShortlistSize)) {
+    const query = `${candidate.exchange} ${candidate.tradingsymbol} catalyst news results order approval rating today India`;
+    if (input.secrets.exaApiKey) tasks.push({ provider: 'exa', promise: new ExaProvider(input.secrets.exaApiKey).search({ query, symbols: [candidate.tradingsymbol], limit: input.settings.focusedSourceLimit, lookbackDays: input.settings.newsLookbackDays }) });
+    if (input.secrets.finnhubApiKey) tasks.push({ provider: 'finnhub', promise: new FinnhubProvider(input.secrets.finnhubApiKey).search({ query, symbols: [candidate.tradingsymbol], limit: input.settings.focusedSourceLimit, lookbackDays: input.settings.newsLookbackDays }) });
+  }
+  if (!input.candidates.length) {
+    const query = PRE_MARKET_CATALYST_QUERIES[0];
+    if (input.secrets.exaApiKey) tasks.push({ provider: 'exa', promise: new ExaProvider(input.secrets.exaApiKey).search({ query, limit: input.settings.broadSourceLimit, lookbackDays: input.settings.newsLookbackDays }) });
+    if (input.secrets.finnhubApiKey) tasks.push({ provider: 'finnhub', promise: new FinnhubProvider(input.secrets.finnhubApiKey).search({ query: 'India market news stocks in focus catalysts', limit: input.settings.broadSourceLimit, lookbackDays: input.settings.newsLookbackDays }) });
+  }
   const settled = await Promise.allSettled(tasks.map((task) => task.promise));
   const sources: ResearchSource[] = [];
   for (const [index, result] of settled.entries()) {
@@ -243,33 +421,333 @@ async function collectSources(symbols: string[], secrets: Awaited<ReturnType<typ
       errors.push(`${provider} failed: ${result.reason instanceof Error ? result.reason.message : 'Research provider failed'}`);
     }
   }
-  return { sources: sources.slice(0, 24), errors };
+  const classified = await classifySourcesWithSmallModel(sources, input.secrets.llmApiKey, input.smallModel ?? 'gpt-4o-mini', input.llmBaseUrl);
+  return { sources: mergeSources(classified, input.settings.sourceLimit), errors };
 }
 
-async function buildPlan(input: { context: BrokerContext; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings; tradingRiskSettings: TradingRiskSettings; rcaLearnings: Awaited<ReturnType<typeof loadRcaLearnings>> }): Promise<{ plan: MorningResearchPlan; conversation: AgentConversationTrace }> {
+async function loadRecentSnapshotCandidates(userId: string, settings: DiscoverySettings): Promise<MarketCandidate[]> {
+  const freshAfter = Date.now() - settings.freshnessHours * 60 * 60 * 1000;
+  const rows = await db.select().from(marketSnapshots).where(eq(marketSnapshots.userId, userId)).orderBy(desc(marketSnapshots.capturedAt)).limit(settings.snapshotLimit);
+  return rows
+    .filter((row) => row.capturedAt.getTime() >= freshAfter)
+    .map((row) => ({
+      exchange: row.exchange.toUpperCase(),
+      tradingsymbol: normalizeSymbol(row.tradingsymbol),
+      instrumentType: 'EQ' as const,
+      lastPrice: positiveNumber(row.lastPrice),
+      referencePrice: positiveNumber(row.lastPrice),
+      changePercent: finiteNumber(row.changePercent),
+      volume: Number(row.volume ?? 0),
+      discoveredBy: ['market_snapshot_validation'],
+      evidence: [{ provider: 'market_snapshot_validation', title: 'Recent quote/snapshot validation', publishedAt: row.capturedAt.toISOString(), raw: row.raw }],
+      validationStatus: 'price_validated' as const,
+      raw: { marketSnapshotId: row.id, capturedAt: row.capturedAt.toISOString() },
+    }));
+}
+
+function enrichCandidatesWithSnapshots(candidates: MarketCandidate[], snapshots: MarketCandidate[]): MarketCandidate[] {
+  const bySymbol = new Map(snapshots.map((snapshot) => [snapshot.tradingsymbol, snapshot]));
+  return candidates.map((candidate) => {
+    const snapshot = bySymbol.get(candidate.tradingsymbol);
+    if (!snapshot) return { ...candidate, validationStatus: candidate.lastPrice || candidate.referencePrice ? 'price_validated' : 'watchlist_only' };
+    const hasLiquidity = (snapshot.volume ?? 0) > 0 || (snapshot.turnover ?? 0) > 0;
+    return {
+      ...candidate,
+      lastPrice: candidate.lastPrice ?? snapshot.lastPrice,
+      referencePrice: candidate.referencePrice ?? snapshot.referencePrice,
+      changePercent: candidate.changePercent ?? snapshot.changePercent,
+      volume: Math.max(candidate.volume ?? 0, snapshot.volume ?? 0) || candidate.volume,
+      turnover: Math.max(candidate.turnover ?? 0, snapshot.turnover ?? 0) || candidate.turnover,
+      validationStatus: hasLiquidity ? 'gtt_ready' : 'price_validated',
+      discoveredBy: [...new Set([...candidate.discoveredBy, ...snapshot.discoveredBy])],
+      evidence: [...candidate.evidence, ...snapshot.evidence].slice(0, 8),
+    };
+  });
+}
+
+function extractCandidatesFromSources(sources: ResearchSource[]): MarketCandidate[] {
+  const candidates: MarketCandidate[] = [];
+  for (const source of sources) {
+    const classification = sourceCatalyst(source);
+    for (const symbol of extractSymbolsFromSource(source, classification)) {
+      candidates.push({
+        exchange: 'NSE',
+        tradingsymbol: symbol,
+        instrumentType: 'EQ',
+        sentiment: sentimentFromDirection(classification.direction),
+        catalystType: classification.type,
+        catalystDirection: classification.direction,
+        discoveredBy: [source.provider],
+        evidence: [{ provider: source.provider, title: source.title, url: source.url, summary: source.summary, publishedAt: source.publishedAt, raw: { ...(source.raw ?? {}), catalyst: classification } }],
+        validationStatus: 'watchlist_only',
+        raw: { sourceProvider: source.provider, extractedFrom: 'small_model_catalyst_source', catalyst: classification },
+      });
+    }
+  }
+  return candidates;
+}
+
+function extractSymbolsFromSource(source: ResearchSource, classification = sourceCatalyst(source)): string[] {
+  const rawSymbols = [
+    ...source.symbols,
+    ...classification.symbols,
+    ...stringArray(source.raw?.symbols),
+    ...stringArray(source.raw?.related),
+    ...stringArray(source.raw?.ticker),
+    ...stringArray(source.raw?.tickers),
+  ];
+  return [...new Set(rawSymbols.map(normalizeSymbol).filter(isNseEquitySymbol))];
+}
+
+function dedupeCandidates(candidates: MarketCandidate[]): MarketCandidate[] {
+  const byKey = new Map<string, MarketCandidate>();
+  for (const candidate of candidates) {
+    const key = `${candidate.exchange.toUpperCase()}:${normalizeSymbol(candidate.tradingsymbol)}`;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...candidate, exchange: candidate.exchange.toUpperCase(), tradingsymbol: normalizeSymbol(candidate.tradingsymbol), discoveredBy: [...new Set(candidate.discoveredBy)], evidence: candidate.evidence.slice(0, 8) });
+      continue;
+    }
+    existing.lastPrice ??= candidate.lastPrice;
+    existing.referencePrice ??= candidate.referencePrice;
+    existing.changePercent ??= candidate.changePercent;
+    existing.volume = Math.max(existing.volume ?? 0, candidate.volume ?? 0) || undefined;
+    existing.turnover = Math.max(existing.turnover ?? 0, candidate.turnover ?? 0) || undefined;
+    existing.catalystType = strongerCatalystType(existing.catalystType, candidate.catalystType);
+    existing.catalystDirection = mergeCatalystDirection(existing.catalystDirection, candidate.catalystDirection);
+    existing.validationStatus = strongerValidation(existing.validationStatus, candidate.validationStatus);
+    existing.reactiveSignal = existing.reactiveSignal || candidate.reactiveSignal;
+    existing.discoveredBy = [...new Set([...existing.discoveredBy, ...candidate.discoveredBy])];
+    existing.evidence = [...existing.evidence, ...candidate.evidence].slice(0, 8);
+  }
+  return [...byKey.values()];
+}
+
+function filterCandidates(candidates: MarketCandidate[], symbolBlacklist: string[], settings: DiscoverySettings, options: { requirePriceAndLiquidity: boolean }): MarketCandidate[] {
+  const blacklist = new Set(symbolBlacklist.map(normalizeSymbol));
+  const freshAfter = Date.now() - settings.freshnessHours * 60 * 60 * 1000;
+  return candidates.filter((candidate) => {
+    if (candidate.exchange !== 'NSE' || candidate.instrumentType !== 'EQ') return false;
+    if (!isNseEquitySymbol(candidate.tradingsymbol) || blacklist.has(candidate.tradingsymbol)) return false;
+    const hasFreshEvidence = candidate.evidence.some((item) => item.publishedAt && Date.parse(item.publishedAt) >= freshAfter);
+    if (!hasFreshEvidence) return false;
+    if (!options.requirePriceAndLiquidity) return true;
+    const hasPrice = positiveNumber(candidate.lastPrice) !== undefined || positiveNumber(candidate.referencePrice) !== undefined;
+    const hasLiquidity = (candidate.volume ?? 0) >= settings.minVolume || (candidate.turnover ?? 0) > 0;
+    return hasPrice && hasLiquidity;
+  });
+}
+
+function rankCandidates(candidates: MarketCandidate[], settings: DiscoverySettings): MarketCandidate[] {
+  return candidates.map((candidate) => {
+    const catalystStrength = catalystStrengthScore(candidate);
+    const sourceConfidence = Math.min(20, candidate.evidence.length * 5 + candidate.discoveredBy.filter((provider) => !provider.includes('market_snapshot')).length * 3);
+    const recencyScore = recencyScoreFor(candidate);
+    const sentimentClarity = candidate.catalystDirection && candidate.catalystDirection !== 'unknown' ? 15 : candidate.sentiment && candidate.sentiment !== 'unknown' ? 8 : 3;
+    const tradeabilityScore = tradeabilityScoreFor(candidate, settings);
+    const moveScore = Math.min(10, Math.abs(candidate.changePercent ?? 0) * 2);
+    const liquidityScore = Math.min(10, Math.log10(Math.max(1, candidate.volume ?? 0)) * 2);
+    const score = Number((catalystStrength + sourceConfidence + recencyScore + sentimentClarity + tradeabilityScore + (candidate.reactiveSignal ? 2 : 0)).toFixed(2));
+    return { ...candidate, ranking: { score, catalystStrength, sourceConfidence, recencyScore, sentimentClarity, tradeabilityScore, moveScore, liquidityScore, evidenceScore: sourceConfidence, riskScore: tradeabilityScore, reasons: rankingReasons(candidate) } };
+  }).sort((a, b) => (b.ranking?.score ?? 0) - (a.ranking?.score ?? 0) || a.tradingsymbol.localeCompare(b.tradingsymbol)).slice(0, settings.candidateShortlistSize);
+}
+
+function rankingReasons(candidate: MarketCandidate): string[] {
+  const reasons: string[] = [];
+  if (candidate.catalystType) reasons.push(`catalyst ${candidate.catalystType}`);
+  if (candidate.catalystDirection && candidate.catalystDirection !== 'unknown') reasons.push(`direction ${candidate.catalystDirection}`);
+  if (candidate.evidence.length) reasons.push(`${candidate.evidence.length} catalyst evidence item(s)`);
+  if (candidate.lastPrice || candidate.referencePrice) reasons.push('price context available');
+  else reasons.push('watchlist-only until price validation');
+  if (candidate.volume !== undefined) reasons.push(`volume ${candidate.volume}`);
+  if (candidate.reactiveSignal) reasons.push('reactive mover confirmation only');
+  return reasons;
+}
+
+function candidateSources(candidates: MarketCandidate[]): ResearchSource[] {
+  return candidates.map((candidate) => ({
+    provider: 'discovery',
+    title: `Likely mover catalyst ${candidate.exchange}:${candidate.tradingsymbol}`,
+    summary: candidate.ranking?.reasons.join('; ') || `${candidate.tradingsymbol} discovered by ${candidate.discoveredBy.join(', ')}`,
+    symbols: [candidate.tradingsymbol],
+    publishedAt: new Date().toISOString(),
+    raw: { candidate },
+  }));
+}
+
+function attachCandidateSymbolsToSources(sources: ResearchSource[], candidates: MarketCandidate[]): ResearchSource[] {
+  return sources.map((source) => {
+    const matched = candidates.filter((candidate) => source.symbols.includes(candidate.tradingsymbol) || textMentionsSymbol(`${source.title} ${source.summary}`, candidate.tradingsymbol)).map((candidate) => candidate.tradingsymbol);
+    return matched.length ? { ...source, symbols: [...new Set([...source.symbols, ...matched])] } : source;
+  });
+}
+
+function attachCandidateSymbolsToSourcesToCandidates(candidates: MarketCandidate[], sources: ResearchSource[]): MarketCandidate[] {
+  return candidates.map((candidate) => ({
+    ...candidate,
+    evidence: candidate.evidence.length ? candidate.evidence : sources.filter((source) => source.symbols.includes(candidate.tradingsymbol)).slice(0, 3).map((source) => ({ provider: source.provider, title: source.title, url: source.url, summary: source.summary, publishedAt: source.publishedAt, raw: source.raw })),
+  }));
+}
+
+function mergeSources(sources: ResearchSource[], limit: number): ResearchSource[] {
+  const byKey = new Map<string, ResearchSource>();
+  for (const source of sources) {
+    const key = `${source.provider}:${source.url ?? source.title}`;
+    if (!byKey.has(key)) byKey.set(key, source);
+  }
+  return [...byKey.values()].sort((a, b) => sourceTime(b) - sourceTime(a) || a.title.localeCompare(b.title)).slice(0, limit);
+}
+
+function sourceTime(source: ResearchSource): number {
+  const parsed = Date.parse(source.publishedAt ?? '');
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function discoveryMetadata(candidates: MarketCandidate[], errors: string[], settings: DiscoverySettings): Record<string, unknown> {
+  return { marketScope: 'NSE_EQUITY_ONLY', mode: 'pre_market_catalyst', generatedAt: new Date().toISOString(), settings, errors, candidates };
+}
+
+function normalizeSymbol(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toUpperCase().replace(/^NSE[:\s-]*/, '').replace(/\.(NS|BO)$/i, '') : '';
+}
+
+function isNseEquitySymbol(symbol: string): boolean {
+  return /^[A-Z][A-Z0-9]{1,14}$/.test(symbol) && !symbol.includes('NIFTY') && symbol !== 'SENSEX' && !COMMON_NEWS_TOKENS.has(symbol);
+}
+
+const COMMON_NEWS_TOKENS = new Set(['NSE', 'BSE', 'IPO', 'FII', 'DII', 'RBI', 'SEBI', 'GDP', 'EPS', 'CEO', 'CFO', 'BUY', 'SELL', 'INDIA', 'MARKET', 'STOCK', 'SHARE', 'INDEX', 'TODAY', 'NEWS', 'RESULTS', 'ORDER', 'WIN', 'APPROVAL', 'RATING', 'CRUDE', 'RUPEE']);
+
+function stringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.flatMap((item) => stringArray(item));
+  if (typeof value === 'string') return value.split(/[\s,;|]+/).filter(Boolean);
+  return [];
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function positiveNumber(value: unknown): number | undefined {
+  const number = finiteNumber(value);
+  return number !== undefined && number > 0 ? number : undefined;
+}
+
+const CATALYST_TYPES: CatalystType[] = ['earnings', 'order_win', 'mna', 'regulatory', 'corporate_action', 'brokerage_rating', 'sector_cue', 'global_cue', 'management_commentary', 'litigation_or_risk', 'other_news'];
+const CATALYST_DIRECTIONS: CatalystDirection[] = ['positive', 'negative', 'mixed', 'unknown'];
+
+function sourceCatalyst(source: ResearchSource): CatalystClassification {
+  const raw = source.raw?.catalyst;
+  if (raw && typeof raw === 'object') {
+    const record = raw as Record<string, unknown>;
+    return {
+      symbols: stringArray(record.symbols).map(normalizeSymbol).filter(isNseEquitySymbol),
+      type: catalystTypeValue(record.type ?? record.catalystType),
+      direction: catalystDirectionValue(record.direction),
+      strength: boundedNumber(record.strength, 0, 35, 8),
+      confidence: boundedNumber(record.confidence, 0, 1, 0.5),
+      rationale: typeof record.rationale === 'string' ? record.rationale : undefined,
+    };
+  }
+  return fallbackClassification(source);
+}
+
+function catalystTypeValue(value: unknown): CatalystType {
+  return typeof value === 'string' && CATALYST_TYPES.includes(value as CatalystType) ? value as CatalystType : 'other_news';
+}
+
+function catalystDirectionValue(value: unknown): CatalystDirection {
+  return typeof value === 'string' && CATALYST_DIRECTIONS.includes(value as CatalystDirection) ? value as CatalystDirection : 'unknown';
+}
+
+function boundedNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
+function catalystStrengthScore(candidate: MarketCandidate): number {
+  const evidenceStrength = Math.max(0, ...candidate.evidence.map((item) => item.raw && typeof item.raw.catalyst === 'object' ? boundedNumber((item.raw.catalyst as Record<string, unknown>).strength, 0, 35, 8) : 0));
+  const direct = candidate.catalystType === 'other_news' || !candidate.catalystType ? 8 : candidate.catalystType === 'sector_cue' || candidate.catalystType === 'global_cue' ? 14 : 22;
+  return Math.min(35, Math.max(evidenceStrength, direct) + Math.min(8, Math.max(0, candidate.evidence.length - 1) * 2));
+}
+
+function recencyScoreFor(candidate: MarketCandidate): number {
+  const newest = Math.max(0, ...candidate.evidence.map((item) => Date.parse(item.publishedAt ?? '') || 0));
+  if (!newest) return 3;
+  const hours = (Date.now() - newest) / (60 * 60 * 1000);
+  if (hours <= 12) return 15;
+  if (hours <= 24) return 11;
+  if (hours <= 48) return 7;
+  return 3;
+}
+
+function tradeabilityScoreFor(candidate: MarketCandidate, settings: DiscoverySettings): number {
+  const hasPrice = positiveNumber(candidate.lastPrice) !== undefined || positiveNumber(candidate.referencePrice) !== undefined;
+  const hasLiquidity = (candidate.volume ?? 0) >= settings.minVolume || (candidate.turnover ?? 0) > 0;
+  if (hasPrice && hasLiquidity) return 15;
+  if (hasPrice) return 10;
+  return 4;
+}
+
+function strongerCatalystType(a?: CatalystType, b?: CatalystType): CatalystType | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  return catalystTypeBaseStrength(a) >= catalystTypeBaseStrength(b) ? a : b;
+}
+
+function catalystTypeBaseStrength(type: CatalystType): number {
+  return type === 'other_news' ? 8 : type === 'sector_cue' || type === 'global_cue' ? 14 : 22;
+}
+
+function mergeCatalystDirection(a?: CatalystDirection, b?: CatalystDirection): CatalystDirection | undefined {
+  if (!a) return b;
+  if (!b || a === b) return a;
+  if (a === 'unknown') return b;
+  if (b === 'unknown') return a;
+  return 'mixed';
+}
+
+function strongerValidation(a?: MarketCandidate['validationStatus'], b?: MarketCandidate['validationStatus']): MarketCandidate['validationStatus'] {
+  const order = ['watchlist_only', 'price_validated', 'liquidity_validated', 'gtt_ready'];
+  return order.indexOf(b ?? 'watchlist_only') > order.indexOf(a ?? 'watchlist_only') ? b : a;
+}
+
+function sentimentFromDirection(direction: CatalystDirection): MarketCandidate['sentiment'] {
+  if (direction === 'positive') return 'bullish';
+  if (direction === 'negative') return 'bearish';
+  if (direction === 'mixed') return 'neutral';
+  return 'unknown';
+}
+
+function textMentionsSymbol(text: string, symbol: string): boolean {
+  return new RegExp(`\\b${symbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text.toUpperCase());
+}
+
+async function buildPlan(input: { context: BrokerContext; discoveredCandidates: MarketCandidate[]; sources: ResearchSource[]; model: string; llmApiKey: string | null; llmBaseUrl?: string; providerWarnings: string[]; researchSettings: MorningResearchSettings; tradingRiskSettings: TradingRiskSettings; discoverySettings: DiscoverySettings; rcaLearnings: Awaited<ReturnType<typeof loadRcaLearnings>> }): Promise<{ plan: MorningResearchPlan; conversation: AgentConversationTrace }> {
   if (!input.llmApiKey) throw new Error('LLM API key is required before morning research can start');
   const llm = new OpenAiCompatibleProvider(input.llmApiKey, input.llmBaseUrl);
 
-  const ideasMessages = buildMorningResearchIdeasMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, tradingRisk: input.tradingRiskSettings, rcaLearnings: input.rcaLearnings });
+  const promptSourcesLimit = Math.max(input.discoverySettings.promptSourceLimit, input.discoveredCandidates.length);
+  const ideasMessages = buildMorningResearchIdeasMessages({ broker: input.context, discoveredCandidates: input.discoveredCandidates, sources: input.sources.slice(0, promptSourcesLimit), settings: input.researchSettings, tradingRisk: input.tradingRiskSettings, rcaLearnings: input.rcaLearnings });
   const ideasResult = await generateValidatedJsonWithRetry({
     llm,
     model: input.model,
     temperature: 0.15,
     messages: ideasMessages,
     stage: 'ideas',
-    validate: (json) => normalizeIdeasPlan(json, input.researchSettings),
+    validate: (json) => normalizeIdeasPlan(json, input.researchSettings, allowedResearchSymbols(input.context, input.discoveredCandidates, input.sources)),
   });
   const ideasPlan = ideasResult.value;
   const ideasConversation = { ...ideasResult.conversation, thoughtDetails: [...ideasResult.conversation.thoughtDetails, ...deriveIdeasThoughtDetails(ideasPlan)] };
 
-  const gttMessages = buildMorningResearchGttMessages({ broker: input.context, sources: input.sources.slice(0, 12), settings: input.researchSettings, tradingRisk: input.tradingRiskSettings, rcaLearnings: input.rcaLearnings, ideasPlan: ideasPlan as unknown as Record<string, unknown> });
+  const gttMessages = buildMorningResearchGttMessages({ broker: input.context, discoveredCandidates: input.discoveredCandidates, sources: input.sources.slice(0, promptSourcesLimit), settings: input.researchSettings, tradingRisk: input.tradingRiskSettings, rcaLearnings: input.rcaLearnings, ideasPlan: ideasPlan as unknown as Record<string, unknown> });
   const gttResult = await generateValidatedJsonWithRetry({
     llm,
     model: input.model,
     temperature: 0.1,
     messages: gttMessages,
     stage: 'gtt',
-    validate: (json) => normalizeGttPlan(json, input.researchSettings),
+    validate: (json) => normalizeGttPlan(json, input.researchSettings, input.discoveredCandidates),
   });
   const gttPlan = gttResult.value;
   const plan: MorningResearchPlan = { ...ideasPlan, ...gttPlan };
@@ -336,7 +814,7 @@ function failedConversation(model: string, reason: string, providerWarnings: str
   };
 }
 
-async function persistFailedResearchSession(input: { userId: string; tradeDate: string; isDryRun: boolean; model: string; message: string; providerWarnings: string[]; context: BrokerContext; sources: ResearchSource[] }) {
+async function persistFailedResearchSession(input: { userId: string; tradeDate: string; isDryRun: boolean; model: string; message: string; providerWarnings: string[]; context: BrokerContext; discoveredCandidates: MarketCandidate[]; sources: ResearchSource[] }) {
   const conversation = failedConversation(input.model, input.message, input.providerWarnings, input.sources);
   const [session] = await db.insert(dailyResearchSessions).values({
     userId: input.userId,
@@ -346,7 +824,7 @@ async function persistFailedResearchSession(input: { userId: string; tradeDate: 
     sectorBias: [],
     riskWarnings: [input.message, ...input.providerWarnings],
     model: input.model,
-    rawPlan: { error: input.message, sourceCount: input.sources.length },
+    rawPlan: { error: input.message, sourceCount: input.sources.length, discovery: { candidates: input.discoveredCandidates } },
     agentConversation: conversation as unknown as Record<string, unknown>,
     isDryRun: input.isDryRun,
     dryRunStatus: input.isDryRun ? 'failed' : null,
@@ -359,7 +837,7 @@ async function persistFailedResearchSession(input: { userId: string; tradeDate: 
       sectorBias: [],
       riskWarnings: [input.message, ...input.providerWarnings],
       model: input.model,
-      rawPlan: { error: input.message, sourceCount: input.sources.length },
+      rawPlan: { error: input.message, sourceCount: input.sources.length, discovery: { candidates: input.discoveredCandidates } },
       agentConversation: conversation as unknown as Record<string, unknown>,
       dryRunStatus: input.isDryRun ? 'failed' : null,
       dryRunSummary: input.isDryRun ? `Dry run morning research failed: ${input.message}` : '',
@@ -411,7 +889,7 @@ function mergeConversations(model: string, stage1: AgentConversationTrace, stage
   };
 }
 
-function normalizeIdeasPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchIdeasPlan {
+function normalizeIdeasPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNING_RESEARCH_SETTINGS, allowedSymbols?: Set<string>): MorningResearchIdeasPlan {
   const errors: string[] = [];
   const marketThesis = requiredString(raw.marketThesis, 'marketThesis', errors);
   const sectorBiasInput = requiredRecordArray(raw.sectorBias, 'sectorBias', errors);
@@ -441,13 +919,18 @@ function normalizeIdeasPlan(raw: Record<string, unknown>, settings = DEFAULT_MOR
   }));
   const riskWarnings = riskWarningsInput.map((item, index) => requiredString(item, `riskWarnings[${index}]`, errors)).slice(0, 12);
 
+  if (allowedSymbols?.size) {
+    for (const item of [...watchlist, ...tradeCandidates]) {
+      if (!allowedSymbols.has(item.tradingsymbol)) errors.push(`${item.tradingsymbol} is not grounded in discovered candidates, broker context, or source symbols`);
+    }
+  }
   if (!sectorBias.length) errors.push('sectorBias must contain at least one item');
   if (!watchlist.length) errors.push('watchlist must contain at least one item');
   if (errors.length) throw new Error(`Invalid ideas research JSON: ${errors.join('; ')}`);
   return { marketThesis, sectorBias, watchlist, tradeCandidates, riskWarnings };
 }
 
-function normalizeGttPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNING_RESEARCH_SETTINGS): MorningResearchGttPlan {
+function normalizeGttPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNING_RESEARCH_SETTINGS, discoveredCandidates: MarketCandidate[] = []): MorningResearchGttPlan {
   const errors: string[] = [];
   const gttCandidatesInput = requiredRecordArray(raw.gttCandidates, 'gttCandidates', errors);
   const gttCandidates = gttCandidatesInput.slice(0, settings.maxGttCandidates).map((item, index) => {
@@ -471,8 +954,20 @@ function normalizeGttPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNI
       rationale: requiredString(item.rationale, `gttCandidates[${index}].rationale`, errors),
     };
   });
+  const priceContextBySymbol = new Map(discoveredCandidates.map((candidate) => [candidate.tradingsymbol, Boolean(candidate.lastPrice || candidate.referencePrice)]));
+  const groundedGttCandidates = gttCandidates.filter((candidate) => priceContextBySymbol.get(candidate.tradingsymbol) === true);
+  if (gttCandidates.length !== groundedGttCandidates.length) errors.push('gttCandidates require discovered candidate price context; return an empty gttCandidates array when reference price context is missing');
   if (errors.length) throw new Error(`Invalid GTT research JSON: ${errors.join('; ')}`);
-  return { gttCandidates };
+  return { gttCandidates: groundedGttCandidates };
+}
+
+function allowedResearchSymbols(context: BrokerContext, candidates: MarketCandidate[], sources: ResearchSource[]): Set<string> {
+  return new Set([
+    ...candidates.map((candidate) => candidate.tradingsymbol),
+    ...context.holdings.map((row) => normalizeSymbol(row.tradingsymbol)),
+    ...context.positions.map((row) => normalizeSymbol(row.tradingsymbol)),
+    ...sources.flatMap((source) => source.symbols.map(normalizeSymbol)),
+  ].filter(Boolean));
 }
 
 function requiredArray(value: unknown, path: string, errors: string[]): unknown[] {
@@ -505,8 +1000,8 @@ function requiredSymbol(value: unknown, path: string, errors: string[]): string 
   return symbol;
 }
 
-function requiredExchange(value: unknown, path: string, errors: string[]): 'NSE' | 'NFO' {
-  return requiredEnum(value, path, ['NSE', 'NFO'] as const, errors);
+function requiredExchange(value: unknown, path: string, errors: string[]): 'NSE' {
+  return requiredEnum(value, path, ['NSE'] as const, errors);
 }
 
 function requiredEnum<const T extends readonly string[]>(value: unknown, path: string, allowed: T, errors: string[]): T[number] {
@@ -553,11 +1048,36 @@ function stringConfig(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+export const __researchDiscoveryTestHooks = {
+  classifySourcesWithSmallModel,
+  collectSources,
+  dedupeCandidates,
+  filterCandidates,
+  maybeConfirmWithReactiveMovers,
+  normalizeGttPlan,
+  rankCandidates,
+};
+
 function parseResearchSettings(config: Record<string, unknown>): MorningResearchSettings {
   return {
     maxWatchlistItems: configInt(config.maxWatchlistItems, DEFAULT_MORNING_RESEARCH_SETTINGS.maxWatchlistItems, 0, 24),
     maxGttCandidates: configInt(config.maxGttCandidates, DEFAULT_MORNING_RESEARCH_SETTINGS.maxGttCandidates, 0, 12),
     riskTolerance: normalizeRiskTolerance(config.riskTolerance),
+  };
+}
+
+function parseDiscoverySettings(config: Record<string, unknown>): DiscoverySettings {
+  return {
+    candidateShortlistSize: configInt(config.candidateShortlistSize, DEFAULT_DISCOVERY_SETTINGS.candidateShortlistSize, 1, 50),
+    broadSourceLimit: configInt(config.broadSourceLimit, DEFAULT_DISCOVERY_SETTINGS.broadSourceLimit, 1, 50),
+    focusedSourceLimit: configInt(config.focusedSourceLimit, DEFAULT_DISCOVERY_SETTINGS.focusedSourceLimit, 1, 10),
+    sourceLimit: configInt(config.sourceLimit, DEFAULT_DISCOVERY_SETTINGS.sourceLimit, 1, 100),
+    snapshotLimit: configInt(config.snapshotLimit, DEFAULT_DISCOVERY_SETTINGS.snapshotLimit, 1, 2_000),
+    promptSourceLimit: configInt(config.promptSourceLimit, DEFAULT_DISCOVERY_SETTINGS.promptSourceLimit, 1, 100),
+    freshnessHours: configInt(config.freshnessHours, DEFAULT_DISCOVERY_SETTINGS.freshnessHours, 1, 168),
+    newsLookbackDays: configInt(config.newsLookbackDays, DEFAULT_DISCOVERY_SETTINGS.newsLookbackDays, 1, 30),
+    minVolume: configInt(config.minVolume, DEFAULT_DISCOVERY_SETTINGS.minVolume, 0, Number.MAX_SAFE_INTEGER),
+    enableReactiveMoverConfirmation: config.enableReactiveMoverConfirmation === true,
   };
 }
 
