@@ -292,9 +292,6 @@ async function discoverCatalystCandidates(input: { secrets: Awaited<ReturnType<t
       tasks.push({ provider: 'exa', promise: new ExaProvider(input.secrets.exaApiKey).search({ query, limit: perQueryLimit, lookbackDays: input.settings.newsLookbackDays }) });
     }
   }
-  if (input.secrets.finnhubApiKey) {
-    tasks.push({ provider: 'finnhub', promise: new FinnhubProvider(input.secrets.finnhubApiKey).search({ query: 'India market news stocks in focus catalysts', limit: input.settings.broadSourceLimit, lookbackDays: input.settings.newsLookbackDays }) });
-  }
   const settled = await Promise.allSettled(tasks.map((task) => task.promise));
   const sources: ResearchSource[] = [];
   const errors: string[] = [];
@@ -408,7 +405,6 @@ async function collectSources(input: { secrets: Awaited<ReturnType<typeof loadSe
   if (!input.candidates.length) {
     const query = PRE_MARKET_CATALYST_QUERIES[0];
     if (input.secrets.exaApiKey) tasks.push({ provider: 'exa', promise: new ExaProvider(input.secrets.exaApiKey).search({ query, limit: input.settings.broadSourceLimit, lookbackDays: input.settings.newsLookbackDays }) });
-    if (input.secrets.finnhubApiKey) tasks.push({ provider: 'finnhub', promise: new FinnhubProvider(input.secrets.finnhubApiKey).search({ query: 'India market news stocks in focus catalysts', limit: input.settings.broadSourceLimit, lookbackDays: input.settings.newsLookbackDays }) });
   }
   const settled = await Promise.allSettled(tasks.map((task) => task.promise));
   const sources: ResearchSource[] = [];
@@ -750,7 +746,8 @@ async function buildPlan(input: { context: BrokerContext; discoveredCandidates: 
     validate: (json) => normalizeGttPlan(json, input.researchSettings, input.discoveredCandidates),
   });
   const gttPlan = gttResult.value;
-  const plan: MorningResearchPlan = { ...ideasPlan, ...gttPlan };
+  const validationNotes = [...(ideasPlan.validationNotes ?? []), ...(gttPlan.validationNotes ?? [])];
+  const plan: MorningResearchPlan = { ...ideasPlan, ...gttPlan, ...(validationNotes.length ? { validationNotes } : {}) };
   return { plan, conversation: mergeConversations(input.model, ideasConversation, { ...gttResult.conversation, thoughtDetails: [...gttResult.conversation.thoughtDetails, ...deriveGttThoughtDetails(gttPlan)] }, plan) };
 }
 
@@ -857,6 +854,7 @@ async function persistFailedResearchSession(input: { userId: string; tradeDate: 
 function deriveIdeasThoughtDetails(plan: MorningResearchIdeasPlan) {
   return [
     { title: 'Stage 1 ideas validated', detail: `${plan.watchlist.length} watchlist item(s), ${plan.tradeCandidates.length} transient trade candidate(s), ${plan.riskWarnings.length} risk warning(s). Trade candidates remain session-only.` },
+    ...(plan.validationNotes ?? []).map((note) => ({ title: 'Stage 1 validation note', detail: note })),
     ...plan.tradeCandidates.map((item) => ({ title: `Transient idea · ${item.tradingsymbol}`, detail: item.thesis, metadata: { exchange: item.exchange, side: item.side, confidence: item.confidence, entryPlan: item.entryPlan, invalidation: item.invalidation } })),
   ];
 }
@@ -864,6 +862,7 @@ function deriveIdeasThoughtDetails(plan: MorningResearchIdeasPlan) {
 function deriveGttThoughtDetails(plan: MorningResearchGttPlan) {
   return [
     { title: 'Stage 2 GTT drafts validated', detail: `${plan.gttCandidates.length} draft GTT candidate(s) selected for persistence.` },
+    ...(plan.validationNotes ?? []).map((note) => ({ title: 'Stage 2 validation note', detail: note })),
     ...plan.gttCandidates.map((item) => ({ title: `Draft GTT · ${item.tradingsymbol}`, detail: item.rationale, metadata: { exchange: item.exchange, transactionType: item.transactionType, targetPrice: item.targetPrice, stopLossPrice: item.stopLossPrice, quantity: item.quantity } })),
   ];
 }
@@ -919,15 +918,14 @@ function normalizeIdeasPlan(raw: Record<string, unknown>, settings = DEFAULT_MOR
   }));
   const riskWarnings = riskWarningsInput.map((item, index) => requiredString(item, `riskWarnings[${index}]`, errors)).slice(0, 12);
 
-  if (allowedSymbols?.size) {
-    for (const item of [...watchlist, ...tradeCandidates]) {
-      if (!allowedSymbols.has(item.tradingsymbol)) errors.push(`${item.tradingsymbol} is not grounded in discovered candidates, broker context, or source symbols`);
-    }
-  }
+  const validationNotes: string[] = [];
+  const groundedTradeCandidates = allowedSymbols?.size ? tradeCandidates.filter((item) => allowedSymbols.has(item.tradingsymbol)) : tradeCandidates;
+  const droppedTradeSymbols = allowedSymbols?.size ? tradeCandidates.filter((item) => !allowedSymbols.has(item.tradingsymbol)).map((item) => item.tradingsymbol) : [];
+  if (droppedTradeSymbols.length) validationNotes.push(`Dropped ungrounded trade candidate(s) during validation: ${[...new Set(droppedTradeSymbols)].join(', ')}.`);
   if (!sectorBias.length) errors.push('sectorBias must contain at least one item');
   if (!watchlist.length) errors.push('watchlist must contain at least one item');
   if (errors.length) throw new Error(`Invalid ideas research JSON: ${errors.join('; ')}`);
-  return { marketThesis, sectorBias, watchlist, tradeCandidates, riskWarnings };
+  return { marketThesis, sectorBias, watchlist, tradeCandidates: groundedTradeCandidates, riskWarnings, ...(validationNotes.length ? { validationNotes } : {}) };
 }
 
 function normalizeGttPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNING_RESEARCH_SETTINGS, discoveredCandidates: MarketCandidate[] = []): MorningResearchGttPlan {
@@ -956,9 +954,10 @@ function normalizeGttPlan(raw: Record<string, unknown>, settings = DEFAULT_MORNI
   });
   const priceContextBySymbol = new Map(discoveredCandidates.map((candidate) => [candidate.tradingsymbol, Boolean(candidate.lastPrice || candidate.referencePrice)]));
   const groundedGttCandidates = gttCandidates.filter((candidate) => priceContextBySymbol.get(candidate.tradingsymbol) === true);
-  if (gttCandidates.length !== groundedGttCandidates.length) errors.push('gttCandidates require discovered candidate price context; return an empty gttCandidates array when reference price context is missing');
+  const droppedGttSymbols = gttCandidates.filter((candidate) => priceContextBySymbol.get(candidate.tradingsymbol) !== true).map((candidate) => candidate.tradingsymbol);
+  const validationNotes = droppedGttSymbols.length ? [`Dropped GTT candidate(s) missing discovered price context during validation: ${[...new Set(droppedGttSymbols)].join(', ')}.`] : [];
   if (errors.length) throw new Error(`Invalid GTT research JSON: ${errors.join('; ')}`);
-  return { gttCandidates: groundedGttCandidates };
+  return { gttCandidates: groundedGttCandidates, ...(validationNotes.length ? { validationNotes } : {}) };
 }
 
 function allowedResearchSymbols(context: BrokerContext, candidates: MarketCandidate[], sources: ResearchSource[]): Set<string> {
@@ -1054,6 +1053,7 @@ export const __researchDiscoveryTestHooks = {
   dedupeCandidates,
   filterCandidates,
   maybeConfirmWithReactiveMovers,
+  normalizeIdeasPlan,
   normalizeGttPlan,
   rankCandidates,
 };

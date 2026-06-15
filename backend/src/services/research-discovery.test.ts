@@ -83,6 +83,28 @@ describe('research discovery pure helpers', () => {
     }
   });
 
+  test('does not call broad Finnhub research when no candidates are available', async () => {
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = Object.assign(async () => {
+      fetchCalls += 1;
+      return Response.json({});
+    }, originalFetch);
+    try {
+      const result = await __researchDiscoveryTestHooks.collectSources({
+        secrets: { exaApiKey: null, finnhubApiKey: 'test-finnhub-key', llmApiKey: null },
+        settings,
+        candidates: [],
+      });
+
+      expect(result.sources).toEqual([]);
+      expect(result.errors).toEqual([]);
+      expect(fetchCalls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('filters blacklisted and non-NSE-equity candidates', () => {
     const filtered = __researchDiscoveryTestHooks.filterCandidates([
       candidate({ tradingsymbol: 'TATAMOTORS' }),
@@ -146,14 +168,60 @@ describe('research discovery pure helpers', () => {
     expect(ranked[0].ranking?.score).toBeGreaterThan(ranked[1].ranking?.score ?? 0);
   });
 
-  test('rejects GTT candidates when discovered candidate price context is missing', () => {
-    expect(() => __researchDiscoveryTestHooks.normalizeGttPlan({
+  test('drops GTT candidates when discovered candidate price context is missing', () => {
+    const plan = __researchDiscoveryTestHooks.normalizeGttPlan({
       gttCandidates: [{ exchange: 'NSE', tradingsymbol: 'NOPRICE', transactionType: 'SELL', targetPrice: 110, stopLossPrice: 95, quantity: 1, rationale: 'test' }],
-    }, undefined, [{ ...candidate({ tradingsymbol: 'NOPRICE' }), lastPrice: undefined, referencePrice: undefined }])).toThrow(/price context/i);
+    }, undefined, [{ ...candidate({ tradingsymbol: 'NOPRICE' }), lastPrice: undefined, referencePrice: undefined }]);
+
+    expect(plan.gttCandidates).toEqual([]);
+    expect(plan.validationNotes?.join(' ')).toContain('NOPRICE');
   });
 
   test('accepts empty GTT output when price context is missing', () => {
     const plan = __researchDiscoveryTestHooks.normalizeGttPlan({ gttCandidates: [] }, undefined, []);
     expect(plan.gttCandidates).toEqual([]);
+  });
+
+  test('drops ungrounded trade candidates but keeps grounded ones', () => {
+    const plan = __researchDiscoveryTestHooks.normalizeIdeasPlan({
+      marketThesis: 'Grounded thesis.',
+      sectorBias: [{ sector: 'Banks', bias: 'bullish', reason: 'evidence' }],
+      watchlist: [{ exchange: 'NSE', tradingsymbol: 'GROUNDED', bias: 'long', reason: 'watch' }],
+      tradeCandidates: [
+        { exchange: 'NSE', tradingsymbol: 'GROUNDED', side: 'BUY', thesis: 'ok', entryPlan: 'breakout', invalidation: 'failure', confidence: 70 },
+        { exchange: 'NSE', tradingsymbol: 'UNGROUNDED', side: 'BUY', thesis: 'no support', entryPlan: 'breakout', invalidation: 'failure', confidence: 70 },
+      ],
+      riskWarnings: [],
+    }, undefined, new Set(['GROUNDED']));
+
+    expect(plan.tradeCandidates.map((item) => item.tradingsymbol)).toEqual(['GROUNDED']);
+    expect(plan.validationNotes?.join(' ')).toContain('UNGROUNDED');
+    expect(plan.riskWarnings).toEqual([]);
+  });
+
+  test('keeps ungrounded watchlist items because watchlist is informational', () => {
+    const plan = __researchDiscoveryTestHooks.normalizeIdeasPlan({
+      marketThesis: 'Grounded thesis.',
+      sectorBias: [{ sector: 'Industrials', bias: 'neutral', reason: 'evidence' }],
+      watchlist: [{ exchange: 'NSE', tradingsymbol: 'WATCHONLY', bias: 'neutral', reason: 'watch only' }],
+      tradeCandidates: [],
+      riskWarnings: [],
+    }, undefined, new Set(['OTHER']));
+
+    expect(plan.watchlist.map((item) => item.tradingsymbol)).toEqual(['WATCHONLY']);
+    expect(plan.validationNotes).toBeUndefined();
+  });
+
+  test('allows all ungrounded trade candidates to be filtered without failing structurally valid ideas', () => {
+    const plan = __researchDiscoveryTestHooks.normalizeIdeasPlan({
+      marketThesis: 'Grounded thesis.',
+      sectorBias: [{ sector: 'IT', bias: 'neutral', reason: 'evidence' }],
+      watchlist: [{ exchange: 'NSE', tradingsymbol: 'WATCHONLY', bias: 'neutral', reason: 'watch only' }],
+      tradeCandidates: [{ exchange: 'NSE', tradingsymbol: 'UNGROUNDED', side: 'BUY', thesis: 'no support', entryPlan: 'breakout', invalidation: 'failure', confidence: 70 }],
+      riskWarnings: [],
+    }, undefined, new Set(['OTHER']));
+
+    expect(plan.tradeCandidates).toEqual([]);
+    expect(plan.validationNotes?.join(' ')).toContain('UNGROUNDED');
   });
 });

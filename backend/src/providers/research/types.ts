@@ -133,10 +133,12 @@ export type MorningResearchIdeasPlan = {
   watchlist: Array<{ exchange: string; tradingsymbol: string; bias: 'long' | 'short' | 'neutral'; reason: string }>;
   tradeCandidates: MorningResearchTradeCandidate[];
   riskWarnings: string[];
+  validationNotes?: string[];
 };
 
 export type MorningResearchGttPlan = {
   gttCandidates: MorningResearchGttCandidate[];
+  validationNotes?: string[];
 };
 
 export type MorningResearchPlan = MorningResearchIdeasPlan & MorningResearchGttPlan;
