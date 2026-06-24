@@ -92,6 +92,13 @@
       "when": 1781481600000,
       "tag": "0012_remove_trade_candidates",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1782151742428,
+      "tag": "0013_research_runs",
+      "breakpoints": true
     }
   ]
 }

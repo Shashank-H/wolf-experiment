@@ -153,6 +153,39 @@ export type ResearchBundle = {
 };
 
 export type ResearchResponse = { research: ResearchBundle | null };
+
+export type ResearchRun = {
+  id: string;
+  status: string;
+  researchType: string;
+  clientLocalDate?: string | null;
+  clientTimeZone?: string | null;
+  exaRunId?: string | null;
+  model?: string | null;
+  marketThesis: string;
+  sectorBias: Array<{ sector: string; bias: string; reason: string }>;
+  riskWarnings: string[];
+  providerWarnings: string[];
+  rawResult?: Record<string, unknown>;
+  contextSnapshot?: Record<string, unknown>;
+  costDollars?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+};
+
+export type ResearchRunEvent = {
+  id: string;
+  runId: string;
+  sequence: number;
+  eventType: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type ResearchRunsResponse = { runs: ResearchRun[] };
+export type ResearchRunResponse = { researchRun: { run: ResearchRun; events: ResearchRunEvent[] } };
+export type CreateResearchRunResponse = { runId: string; streamUrl: string };
 export type WatchlistResponse = { watchlist: WatchlistItem[] };
 
 export type TriggerRule = {

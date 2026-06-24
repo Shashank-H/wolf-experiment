@@ -196,9 +196,38 @@ export const dailyResearchSessions = pgTable('daily_research_sessions', {
   dryRunCompletedAt: timestamp('dry_run_completed_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
-  uniqueIndex('daily_research_sessions_user_trade_date_dry_unique').on(table.userId, table.tradeDate, table.isDryRun),
-]);
+});
+
+export const researchRuns = pgTable('research_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  status: varchar('status', { length: 64 }).notNull().default('queued'),
+  researchType: varchar('research_type', { length: 64 }).notNull().default('pre_market'),
+  clientLocalDate: varchar('client_local_date', { length: 16 }),
+  clientTimeZone: varchar('client_time_zone', { length: 96 }),
+  exaRunId: text('exa_run_id'),
+  model: varchar('model', { length: 128 }),
+  marketThesis: text('market_thesis').notNull().default(''),
+  sectorBias: jsonb('sector_bias').$type<Array<{ sector: string; bias: string; reason: string }>>().notNull().default([]),
+  riskWarnings: jsonb('risk_warnings').$type<string[]>().notNull().default([]),
+  providerWarnings: jsonb('provider_warnings').$type<string[]>().notNull().default([]),
+  rawResult: jsonb('raw_result').$type<Record<string, unknown>>().notNull().default({}),
+  contextSnapshot: jsonb('context_snapshot').$type<Record<string, unknown>>().notNull().default({}),
+  costDollars: jsonb('cost_dollars').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+});
+
+export const researchRunEvents = pgTable('research_run_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  runId: uuid('run_id').notNull().references(() => researchRuns.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  sequence: integer('sequence').notNull(),
+  eventType: varchar('event_type', { length: 128 }).notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const researchSources = pgTable('research_sources', {
   id: uuid('id').primaryKey().defaultRandom(),

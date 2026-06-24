@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Link } from '@tanstack/react-router';
 import { Card, EmptyState, ErrorNote, SkeletonRows, StatusBadge } from '../components/ui';
 import { api } from '../lib/api';
-import { formatMoney } from '../lib/format';
+import { formatMoney, formatPrice } from '../lib/format';
 import type { DayBundle, DayResponse } from '../types';
 
 type DayTab = 'summary' | 'research' | 'gtt' | 'triggers' | 'approvals' | 'orders' | 'rca';
@@ -93,7 +93,7 @@ function ResearchTab({ day }: { day: DayBundle }) {
 
 function GttTab({ day }: { day: DayBundle }) {
   return <div className="page-grid two">
-    <Card title="GTT candidates" marker="[C]">{day.gttCandidates.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Exit</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Rationale</th></tr></thead><tbody>{day.gttCandidates.map((item) => <tr key={item.id}><td>{item.exchange}:{item.tradingsymbol}</td><td>{item.transactionType}</td><td>{formatMoney(item.targetPrice ?? item.triggerPrice)}</td><td>{formatMoney(item.stopLossPrice ?? item.limitPrice)}</td><td>{item.quantity}</td><td><StatusBadge status={item.status} /></td><td>{item.rationale}</td></tr>)}</tbody></table></div> : <EmptyState>No GTT candidates.</EmptyState>}</Card>
+    <Card title="GTT candidates" marker="[C]">{day.gttCandidates.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Entry trigger</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Rationale</th></tr></thead><tbody>{day.gttCandidates.map((item) => <tr key={item.id}><td>{item.exchange}:{item.tradingsymbol}</td><td>{item.transactionType}</td><td>{formatPrice(item.triggerPrice ?? item.limitPrice)}</td><td>{formatPrice(item.targetPrice)}</td><td>{formatPrice(item.stopLossPrice)}</td><td>{item.quantity}</td><td><StatusBadge status={item.status} /></td><td>{item.rationale}</td></tr>)}</tbody></table></div> : <EmptyState>No GTT candidates.</EmptyState>}</Card>
     <Card title="App-placed GTTs" marker="[A]">{day.gttOrders.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Broker GTT</th><th>Target</th><th>Stoploss</th><th>Status</th></tr></thead><tbody>{day.gttOrders.map((item) => <tr key={item.id}><td>{item.exchange}:{item.tradingsymbol}</td><td>{item.brokerGttId ?? '-'}</td><td>{formatMoney(item.targetPrice ?? item.triggerPrice)}</td><td>{formatMoney(item.stopLossPrice ?? item.limitPrice)}</td><td><StatusBadge status={item.status} /></td></tr>)}</tbody></table></div> : <EmptyState>No app GTTs.</EmptyState>}</Card>
   </div>;
 }

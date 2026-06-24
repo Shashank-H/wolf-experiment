@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Card, EmptyState, ErrorNote, SkeletonRows, StatusBadge } from '../components/ui';
 import { api } from '../lib/api';
-import { formatMoney } from '../lib/format';
+import { formatPrice } from '../lib/format';
 import { queryClient } from '../queryClient';
 import type { GttCandidate, GttOrder, GttResponse } from '../types';
 
@@ -14,12 +14,21 @@ function rawNumber(raw: Record<string, unknown> | undefined, ...keys: string[]) 
   return undefined;
 }
 
+function positiveMoney(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? value as GttCandidate['triggerPrice'] : undefined;
+}
+
+function gttEntry(item: GttCandidate | GttOrder) {
+  return positiveMoney(item.triggerPrice) ?? positiveMoney(item.limitPrice) ?? rawNumber(item.raw, 'entryPrice', 'buyPrice', 'triggerPrice', 'limitPrice');
+}
+
 function gttTarget(item: GttCandidate | GttOrder) {
-  return item.targetPrice ?? rawNumber(item.raw, 'targetPrice', 'target_price', 'target', 'takeProfitPrice') ?? item.triggerPrice;
+  return positiveMoney(item.targetPrice) ?? rawNumber(item.raw, 'targetPrice', 'target_price', 'target', 'takeProfitPrice');
 }
 
 function gttStopLoss(item: GttCandidate | GttOrder) {
-  return item.stopLossPrice ?? rawNumber(item.raw, 'stopLossPrice', 'stoplossPrice', 'stop_loss_price', 'stopLoss', 'stoploss') ?? item.limitPrice;
+  return positiveMoney(item.stopLossPrice) ?? rawNumber(item.raw, 'stopLossPrice', 'stoplossPrice', 'stop_loss_price', 'stopLoss', 'stoploss');
 }
 
 export function GttPage() {
@@ -55,12 +64,12 @@ export function GttPage() {
     <div className="page-grid two">
       <Card title="GTT candidates" marker="[C]">
         <p className="note">Approve places only a two-leg Kite GTT with both target and stoploss. Regular market/limit orders are disabled by design.</p>
-        {candidates.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Exit side</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Rationale</th><th /></tr></thead><tbody>{candidates.map((candidate) => <tr key={candidate.id}><td>{candidate.exchange}:{candidate.tradingsymbol}</td><td>{candidate.transactionType}</td><td>{formatMoney(gttTarget(candidate))}</td><td>{formatMoney(gttStopLoss(candidate))}</td><td>{candidate.quantity}</td><td><StatusBadge status={candidate.status} /></td><td>{candidate.rationale}</td><td><div className="row"><button className="tiny" disabled={busy} onClick={() => approve.mutate(candidate.id)}>Approve two-leg GTT</button><button className="tiny secondary" disabled={busy} onClick={() => reject.mutate(candidate.id)}>Reject</button></div></td></tr>)}</tbody></table></div> : <EmptyState>No GTT candidates yet.</EmptyState>}
+        {candidates.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Entry trigger</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Rationale</th><th /></tr></thead><tbody>{candidates.map((candidate) => <tr key={candidate.id}><td>{candidate.exchange}:{candidate.tradingsymbol}</td><td>{candidate.transactionType}</td><td>{formatPrice(gttEntry(candidate))}</td><td>{formatPrice(gttTarget(candidate))}</td><td>{formatPrice(gttStopLoss(candidate))}</td><td>{candidate.quantity}</td><td><StatusBadge status={candidate.status} /></td><td>{candidate.rationale}</td><td><div className="row"><button className="tiny" disabled={busy} onClick={() => approve.mutate(candidate.id)}>Approve two-leg GTT</button><button className="tiny secondary" disabled={busy} onClick={() => reject.mutate(candidate.id)}>Reject</button></div></td></tr>)}</tbody></table></div> : <EmptyState>No GTT candidates yet.</EmptyState>}
       </Card>
 
       <Card title="Active app GTTs" marker="[A]">
         <div className="section-actions"><button className="tiny secondary" disabled={busy} onClick={() => revalidate.mutate()}>Revalidate active GTTs</button>{revalidate.data && <span className="note">Checked {revalidate.data.checked}; flagged {revalidate.data.flagged}; auto-managed {revalidate.data.autoManaged ?? 0}.</span>}</div>
-        {active.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Broker GTT</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Message</th><th /></tr></thead><tbody>{active.map((order) => <tr key={order.id}><td>{order.exchange}:{order.tradingsymbol}</td><td>{order.brokerGttId ?? '-'}</td><td>{formatMoney(gttTarget(order))}</td><td>{formatMoney(gttStopLoss(order))}</td><td>{order.quantity}</td><td><StatusBadge status={order.status} /></td><td>{order.statusMessage ?? '-'}</td><td><button className="tiny secondary" disabled={busy} onClick={() => cancel.mutate(order.id)}>Cancel GTT</button></td></tr>)}</tbody></table></div> : <EmptyState>No app-placed GTTs.</EmptyState>}
+        {active.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Broker GTT</th><th>Entry trigger</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Message</th><th /></tr></thead><tbody>{active.map((order) => <tr key={order.id}><td>{order.exchange}:{order.tradingsymbol}</td><td>{order.brokerGttId ?? '-'}</td><td>{formatPrice(gttEntry(order))}</td><td>{formatPrice(gttTarget(order))}</td><td>{formatPrice(gttStopLoss(order))}</td><td>{order.quantity}</td><td><StatusBadge status={order.status} /></td><td>{order.statusMessage ?? '-'}</td><td><button className="tiny secondary" disabled={busy} onClick={() => cancel.mutate(order.id)}>Cancel GTT</button></td></tr>)}</tbody></table></div> : <EmptyState>No app-placed GTTs.</EmptyState>}
       </Card>
 
       <Card title="Broker status" marker="[B]" className="wide">

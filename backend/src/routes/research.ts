@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { env } from '../config/env';
 import { completeDryRunDay, getDryRunHistory, getDryRunToday, runMorningResearchForCurrentMode } from '../services/dry-run';
+import { createResearchRun, getResearchRun, listResearchRuns, subscribeToRunEvents } from '../services/research-runs';
 import { addManualWatchlistItem, deleteWatchlistItem, getResearchById, getTodayResearch, getTodayWatchlist } from '../services/research';
 import { getUserForToken } from '../utils/session';
 
@@ -19,6 +20,53 @@ function bodyRecord(body: unknown): Record<string, unknown> {
 
 export const researchRoutes = new Elysia()
   .group('/research', (app) => app
+    .post('/runs', async ({ body, cookie, set }) => {
+      const user = await requireUser(cookie, set);
+      if (!user) return { error: 'Unauthorized' };
+      try {
+        const input = bodyRecord(body);
+        const researchType = input.researchType === 'after_open' || input.researchType === 'manual' ? input.researchType : 'pre_market';
+        return await createResearchRun(user.id, {
+          researchType,
+          clientLocalDate: typeof input.clientLocalDate === 'string' ? input.clientLocalDate : undefined,
+          clientTimeZone: typeof input.clientTimeZone === 'string' ? input.clientTimeZone : undefined,
+        });
+      } catch (error) {
+        set.status = 400;
+        return { error: error instanceof Error ? error.message : 'Research run could not start' };
+      }
+    })
+    .get('/runs', async ({ cookie, set }) => {
+      const user = await requireUser(cookie, set);
+      if (!user) return { error: 'Unauthorized' };
+      return { runs: await listResearchRuns(user.id) };
+    })
+    .get('/runs/:id', async ({ cookie, params, set }) => {
+      const user = await requireUser(cookie, set);
+      if (!user) return { error: 'Unauthorized' };
+      const run = await getResearchRun(user.id, params.id);
+      if (!run) {
+        set.status = 404;
+        return { error: 'Research run not found' };
+      }
+      return { researchRun: run };
+    })
+    .get('/runs/:id/events', async ({ cookie, params, request, set }) => {
+      const user = await requireUser(cookie, set);
+      if (!user) return { error: 'Unauthorized' };
+      const stream = await subscribeToRunEvents(user.id, params.id, request.signal);
+      if (!stream) {
+        set.status = 404;
+        return { error: 'Research run not found' };
+      }
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+        },
+      });
+    })
     .post('/run-morning', async ({ cookie, set }) => {
       const user = await requireUser(cookie, set);
       if (!user) return { error: 'Unauthorized' };

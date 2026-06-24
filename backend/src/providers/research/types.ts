@@ -71,9 +71,55 @@ export interface MarketDiscoveryProvider {
   discover(input: MarketDiscoveryQuery): Promise<MarketCandidate[]>;
 }
 
+export type ExaSearchOptions = ResearchQuery & {
+  type?: 'instant' | 'fast' | 'auto' | 'deep-lite' | 'deep' | 'deep-reasoning';
+  additionalQueries?: string[];
+  startPublishedDate?: string;
+  endPublishedDate?: string;
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  userLocation?: string;
+  moderation?: boolean;
+  systemPrompt?: string;
+  maxAgeHours?: number;
+  textMaxCharacters?: number;
+  summaryQuery?: string;
+};
+
 export interface ResearchProvider {
   search(input: ResearchQuery): Promise<ResearchSource[]>;
 }
+
+export type ExaAgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type ExaAgentRun = {
+  id: string;
+  status: ExaAgentRunStatus;
+  stopReason?: string | null;
+  createdAt?: string;
+  completedAt?: string | null;
+  request?: Record<string, unknown> | null;
+  output?: { text?: string; structured?: unknown; grounding?: unknown[] };
+  usage?: Record<string, unknown>;
+  costDollars?: Record<string, unknown>;
+};
+
+export type ExaAgentRunEvent = {
+  id?: string;
+  event: string;
+  data?: unknown;
+  createdAt?: string;
+};
+
+export type ExaAgentRunRequest = {
+  query: string;
+  systemPrompt?: string;
+  outputSchema?: Record<string, unknown>;
+  effort?: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'auto';
+  input?: { data?: Array<Record<string, unknown>>; exclusion?: Array<Record<string, unknown>> };
+  metadata?: Record<string, string>;
+  previousRunId?: string;
+};
 
 export type LlmMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 

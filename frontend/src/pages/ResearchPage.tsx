@@ -1,11 +1,11 @@
 import { Link } from '@tanstack/react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card, EmptyState, ErrorNote, Field, SkeletonRows, StatusBadge } from '../components/ui';
-import { api } from '../lib/api';
-import { formatMoney } from '../lib/format';
+import { API_BASE_URL, api } from '../lib/api';
+import { formatPrice } from '../lib/format';
 import { queryClient } from '../queryClient';
-import type { ResearchBundle, ResearchResponse, SettingsResponse, WatchlistResponse } from '../types';
+import type { CreateResearchRunResponse, ResearchBundle, ResearchResponse, ResearchRun, ResearchRunEvent, ResearchRunsResponse, SettingsResponse, WatchlistResponse } from '../types';
 
 type ResearchDrawerTab = 'overview' | 'agent' | 'gtt' | 'sources';
 
@@ -25,16 +25,18 @@ export function ResearchPage() {
   const [reason, setReason] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState<ResearchDrawerTab>('overview');
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [streamEvents, setStreamEvents] = useState<ResearchRunEvent[]>([]);
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => api<SettingsResponse>('/settings') });
   const research = useQuery({ queryKey: ['research', 'today'], queryFn: () => api<ResearchResponse>('/research/today') });
+  const researchRuns = useQuery({ queryKey: ['research', 'runs'], queryFn: () => api<ResearchRunsResponse>('/research/runs') });
   const watchlist = useQuery({ queryKey: ['watchlist', 'today'], queryFn: () => api<WatchlistResponse>('/watchlist/today') });
-  const runMorning = useMutation({
-    mutationFn: () => api<ResearchResponse>('/research/run-morning', { method: 'POST' }),
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['research', 'today'] }),
-        queryClient.invalidateQueries({ queryKey: ['watchlist', 'today'] }),
-      ]);
+  const runResearch = useMutation({
+    mutationFn: () => api<CreateResearchRunResponse>('/research/runs', { method: 'POST', body: JSON.stringify({ researchType: 'pre_market', clientLocalDate: localDateInput(), clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }) }),
+    onSuccess: async (data) => {
+      setActiveRunId(data.runId);
+      setStreamEvents([]);
+      await queryClient.invalidateQueries({ queryKey: ['research', 'runs'] });
     },
   });
   const addManual = useMutation({
@@ -56,20 +58,46 @@ export function ResearchPage() {
   const providerKeys = settings.data?.providerKeys ?? [];
   const hasKey = (provider: string, label?: string) => providerKeys.some((key) => key.provider === provider && (!label || key.label === label));
   const researchSetupIssues = [
-    !hasKey('llm') ? 'LLM API key is required before morning research can run.' : null,
+    !hasKey('exa') ? 'Exa API key is required before research can run.' : null,
+    !hasKey('llm') ? 'LLM API key is required before research can run.' : null,
   ].filter(Boolean);
   const researchSetupBlocked = researchSetupIssues.length > 0;
+
+  useEffect(() => {
+    if (!activeRunId) return;
+    const source = new EventSource(`${API_BASE_URL}/research/runs/${activeRunId}/events`, { withCredentials: true });
+    source.onmessage = (event) => {
+      const data = JSON.parse(event.data || '{}') as Record<string, unknown>;
+      setStreamEvents((current) => [...current, { id: `${activeRunId}-${String(data.sequence ?? current.length + 1)}`, runId: activeRunId, sequence: Number(data.sequence ?? current.length + 1), eventType: event.type || 'message', payload: data, createdAt: String(data.createdAt ?? new Date().toISOString()) }]);
+    };
+    const eventNames = ['research.queued', 'research.started', 'research.providers.validated', 'research.exa.started', 'research.exa.event', 'research.exa.completed', 'research.structured_output.validated', 'research.llm.review.started', 'research.llm_action.requested', 'research.llm_action.completed', 'research.candidates.filtered', 'research.candidates.ranked', 'research.result.ready', 'research.completed', 'research.completed_no_actionable_candidates', 'research.failed'];
+    for (const name of eventNames) {
+      source.addEventListener(name, (event) => {
+        const data = JSON.parse((event as MessageEvent).data || '{}') as Record<string, unknown>;
+        setStreamEvents((current) => [...current, { id: `${activeRunId}-${String(data.sequence ?? current.length + 1)}`, runId: activeRunId, sequence: Number(data.sequence ?? current.length + 1), eventType: name, payload: data, createdAt: String(data.createdAt ?? new Date().toISOString()) }]);
+        if (name === 'research.completed' || name === 'research.completed_no_actionable_candidates' || name === 'research.failed') {
+          void queryClient.invalidateQueries({ queryKey: ['research', 'runs'] });
+          void queryClient.invalidateQueries({ queryKey: ['research', 'today'] });
+        }
+      });
+    }
+    source.onerror = () => void queryClient.invalidateQueries({ queryKey: ['research', 'runs'] });
+    return () => source.close();
+  }, [activeRunId]);
 
   function openDrawer(tab: ResearchDrawerTab) {
     setDrawerTab(tab);
     setDrawerOpen(true);
   }
 
+  const latestRun = researchRuns.data?.runs[0];
+  const groupedRuns = groupRunsByLocalDate(researchRuns.data?.runs ?? []);
+
   return (
     <div className="page-stack research-page">
       <div className="page-actions split-actions">
-        <button className="secondary" onClick={() => openDrawer('overview')} disabled={!bundle}>Deep dive</button>
-        <button onClick={() => runMorning.mutate()} disabled={runMorning.isPending || researchSetupBlocked} title={researchSetupBlocked ? researchSetupIssues.join(' ') : undefined}>{runMorning.isPending ? 'Running…' : 'Run morning research'}</button>
+        <button className="secondary" onClick={() => openDrawer('overview')} disabled={!bundle}>Legacy deep dive</button>
+        <button onClick={() => runResearch.mutate()} disabled={runResearch.isPending || researchSetupBlocked} title={researchSetupBlocked ? researchSetupIssues.join(' ') : undefined}>{runResearch.isPending ? 'Starting…' : 'Run research'}</button>
       </div>
       {researchSetupBlocked && (
         <Card title="Research setup required" marker="[!]">
@@ -78,8 +106,15 @@ export function ResearchPage() {
         </Card>
       )}
       {research.isLoading ? <SkeletonRows /> : research.isError ? <ErrorNote error={research.error} /> : null}
-      {runMorning.isError && <ErrorNote error={runMorning.error} />}
-      {!bundle && !research.isLoading ? <EmptyState>No morning research session yet. Run research to create today&apos;s thesis, watchlist, agent log and GTT drafts.</EmptyState> : null}
+      {runResearch.isError && <ErrorNote error={runResearch.error} />}
+
+      <Card title="Research runs" marker="[R]">
+        {latestRun ? <div className="detail-block"><strong>Latest: {new Date(latestRun.createdAt).toLocaleString()} · <StatusBadge status={latestRun.status} /></strong><p>{latestRun.marketThesis || 'Research is queued/running. Progress appears below.'}</p></div> : <EmptyState>No research runs yet. Start a run to stream Exa + LLM progress.</EmptyState>}
+        {streamEvents.length ? <ul className="plain-list source-list">{streamEvents.slice(-8).map((event) => <li key={event.id}><strong>{event.eventType}</strong> <span className="note">{new Date(event.createdAt).toLocaleTimeString()}</span><br /><span className="note">{eventSummary(event.payload)}</span></li>)}</ul> : null}
+        {groupedRuns.length ? <div className="history-groups">{groupedRuns.map((group) => <div className="detail-block" key={group.date}><strong>{group.date}</strong><ul className="plain-list">{group.runs.map((run) => <li key={run.id}>{new Date(run.createdAt).toLocaleTimeString()} · <StatusBadge status={run.status} /> · {run.researchType} · {run.riskWarnings.length + run.providerWarnings.length} warning(s)</li>)}</ul></div>)}</div> : null}
+      </Card>
+
+      {!bundle && !research.isLoading ? <EmptyState>No legacy morning research session yet. New research runs are shown above.</EmptyState> : null}
 
       {bundle ? (
         <>
@@ -158,7 +193,7 @@ function ResearchDrawer({ bundle, activeWatchlist, open, tab, onTab, onClose, on
 
         {tab === 'agent' && <AgentConversationView bundle={bundle} />}
 
-        {tab === 'gtt' && <div className="drawer-section">{bundle.gttCandidates.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Exit</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Rationale</th></tr></thead><tbody>{bundle.gttCandidates.map((item) => <tr key={item.id}><td><strong>{item.exchange}:{item.tradingsymbol}</strong></td><td>{item.transactionType}</td><td>{formatMoney(item.targetPrice ?? item.triggerPrice)}</td><td>{formatMoney(item.stopLossPrice ?? item.limitPrice)}</td><td>{item.quantity}</td><td><StatusBadge status={item.status} /></td><td>{item.rationale}</td></tr>)}</tbody></table></div> : <EmptyState>No GTT drafts generated.</EmptyState>}</div>}
+        {tab === 'gtt' && <div className="drawer-section">{bundle.gttCandidates.length ? <div className="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Entry trigger</th><th>Target</th><th>Stoploss</th><th>Qty</th><th>Status</th><th>Rationale</th></tr></thead><tbody>{bundle.gttCandidates.map((item) => <tr key={item.id}><td><strong>{item.exchange}:{item.tradingsymbol}</strong></td><td>{item.transactionType}</td><td>{formatPrice(item.triggerPrice ?? item.limitPrice)}</td><td>{formatPrice(item.targetPrice)}</td><td>{formatPrice(item.stopLossPrice)}</td><td>{item.quantity}</td><td><StatusBadge status={item.status} /></td><td>{item.rationale}</td></tr>)}</tbody></table></div> : <EmptyState>No GTT drafts generated.</EmptyState>}</div>}
 
         {tab === 'sources' && <div className="drawer-section">{bundle.sources.length ? <ul className="plain-list source-list">{bundle.sources.map((source) => <li key={source.id}><strong>{source.provider}</strong> {source.url ? <a href={source.url} target="_blank" rel="noreferrer">{source.title}</a> : source.title}<br /><span className="note">{source.summary}</span></li>)}</ul> : <EmptyState>No external sources saved.</EmptyState>}</div>}
       </aside>
@@ -192,6 +227,31 @@ function getDiscoveredMovers(bundle: ResearchBundle): DiscoveredMover[] {
 function finiteNumber(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function localDateInput(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function groupRunsByLocalDate(runs: ResearchRun[]) {
+  const groups = new Map<string, ResearchRun[]>();
+  for (const run of runs) {
+    const date = new Date(run.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    groups.set(date, [...(groups.get(date) ?? []), run]);
+  }
+  return [...groups.entries()].map(([date, groupRuns]) => ({ date, runs: groupRuns }));
+}
+
+function eventSummary(payload: Record<string, unknown>): string {
+  const error = typeof payload.error === 'string' ? payload.error : '';
+  if (error) return error;
+  const status = typeof payload.status === 'string' ? payload.status : '';
+  const providers = Array.isArray(payload.providers) ? `providers: ${payload.providers.join(', ')}` : '';
+  const counts = ['sources', 'candidates', 'watchlist', 'warnings', 'returnedSources'].flatMap((key) => typeof payload[key] === 'number' ? [`${key}: ${payload[key]}`] : []);
+  return [status, providers, ...counts].filter(Boolean).join(' · ') || JSON.stringify(payload).slice(0, 180);
 }
 
 function formatPercent(value: number | undefined): string {

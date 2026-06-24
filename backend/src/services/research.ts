@@ -106,23 +106,6 @@ export async function runMorningResearch(userId: string, options: { dryRun?: boo
     isDryRun,
     dryRunStatus: isDryRun ? 'active' : null,
     dryRunSummary: isDryRun ? 'Dry run research completed; simulated GTTs approved for tracking. No broker orders were placed.' : '',
-  }).onConflictDoUpdate({
-    target: [dailyResearchSessions.userId, dailyResearchSessions.tradeDate, dailyResearchSessions.isDryRun],
-    set: {
-      status: 'completed',
-      marketThesis: plan.marketThesis,
-      sectorBias: plan.sectorBias,
-      riskWarnings: [...plan.riskWarnings, ...providerWarnings],
-      model,
-      rawPlan: { ...(plan as unknown as Record<string, unknown>), discovery: discoveryMetadata(candidates, sourceErrors, discoverySettings) },
-      agentConversation: conversation as unknown as Record<string, unknown>,
-      isDryRun,
-      dryRunStatus: isDryRun ? 'active' : null,
-      dryRunSummary: isDryRun ? 'Dry run research completed; simulated GTTs approved for tracking. No broker orders were placed.' : '',
-      dryRunCompletedAt: null,
-      dryRunTotalPnl: '0',
-      updatedAt: new Date(),
-    },
   }).returning();
 
   await Promise.all([
@@ -826,22 +809,6 @@ async function persistFailedResearchSession(input: { userId: string; tradeDate: 
     isDryRun: input.isDryRun,
     dryRunStatus: input.isDryRun ? 'failed' : null,
     dryRunSummary: input.isDryRun ? `Dry run morning research failed: ${input.message}` : '',
-  }).onConflictDoUpdate({
-    target: [dailyResearchSessions.userId, dailyResearchSessions.tradeDate, dailyResearchSessions.isDryRun],
-    set: {
-      status: 'failed',
-      marketThesis: '',
-      sectorBias: [],
-      riskWarnings: [input.message, ...input.providerWarnings],
-      model: input.model,
-      rawPlan: { error: input.message, sourceCount: input.sources.length, discovery: { candidates: input.discoveredCandidates } },
-      agentConversation: conversation as unknown as Record<string, unknown>,
-      dryRunStatus: input.isDryRun ? 'failed' : null,
-      dryRunSummary: input.isDryRun ? `Dry run morning research failed: ${input.message}` : '',
-      dryRunCompletedAt: null,
-      dryRunTotalPnl: '0',
-      updatedAt: new Date(),
-    },
   }).returning();
   await Promise.all([
     db.delete(researchSources).where(eq(researchSources.sessionId, session.id)),
