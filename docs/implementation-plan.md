@@ -116,6 +116,7 @@ GET /ready
 ```txt
 GET  /settings
 PUT  /settings/trading
+PUT  /settings/research
 PUT  /settings/providers
 PUT  /settings/yolo-mode
 ```
@@ -133,19 +134,27 @@ PUT  /settings/yolo-mode
 Minimal utility screens:
 
 - Login/register screen.
-- Settings screen:
+- Trading settings screen:
+  - risk limits
+  - research generation limits
+  - risk tolerance/risk style
+  - YOLO mode toggle with confirmation copy
+  - kill switch
+- App/provider settings screen:
   - Kite credentials
   - Exa key
   - Finnhub key
   - OpenAI-compatible LLM config
-  - trading preferences
-  - YOLO mode toggle with confirmation copy
+- Home page setup CTA:
+  - show missing API keys, broker auth, or expired token issues
+  - link to app/provider settings when action is required
 
 ### Deliverables
 
 - User can register/login.
 - User can store encrypted provider credentials.
 - User can configure risk/trading preferences.
+- User can configure morning research output limits and risk style.
 - YOLO mode changes are audited.
 
 ---
@@ -255,20 +264,22 @@ Run morning research and persist structured AI output.
   - `prompt_versions`
   - `model_usage_logs`
   - `watchlist_items`
-  - `trade_candidates`
+  - transient trade candidates stored in `daily_research_sessions.rawPlan`
   - `gtt_candidates`
 
 - Build morning research job:
 
 ```txt
-fetch broker state
-fetch research/news
-fetch Kite quote context
-call LLM for structured daily plan
-validate JSON shape
+fetch broker state and user risk/context
+collect pre-market catalyst research/news
+small model classifies explicit NSE symbols and catalyst metadata
+rank catalyst-backed likely movers
+fetch Kite quote/snapshot context for validation
+call Stage 1 LLM for thesis/watchlist/transient trade ideas
+call Stage 2 LLM for grounded GTT drafts
+validate JSON shape, symbol grounding, and GTT price/risk context
 persist research session
 create watchlist items
-create trigger drafts
 create GTT candidates
 create notification
 ```
@@ -288,18 +299,16 @@ DELETE /watchlist/:id
 
 - Morning Research screen:
   - run button
-  - market thesis
-  - sector bias
-  - watchlist
-  - trade candidates
-  - GTT suggestions
-  - risk warnings
+  - summary-first market thesis
+  - watchlist preview
+  - trade/GTT/warning counts
+  - right-side deep-dive drawer for sector bias, full watchlist, likely mover/catalyst candidates, transient trade reasoning, GTT suggestions, sources, and risk warnings
 
 ### Deliverables
 
 - User can manually run morning research.
 - Structured research output is stored and visible.
-- Watchlist and initial trade/GTT candidates are created.
+- Watchlist and grounded GTT candidates are created; transient trade ideas remain session-level reasoning artifacts.
 
 ---
 
@@ -366,9 +375,11 @@ POST /approvals/:id/reject
   - candidate details
   - risk result
   - approve/reject actions
-- Risk Settings screen:
-  - core limits
+- Trading Settings screen:
+  - core limits with defaults
   - kill switch
+  - YOLO mode
+  - research risk style and candidate limits
 
 ### Deliverables
 
@@ -379,11 +390,67 @@ POST /approvals/:id/reject
 
 ---
 
-## Phase 5 — GTT and Order Execution
+## Phase 5A — Dry-Run Trading and Reinforcement Loop
 
 ### Goals
 
-Place Kite GTTs/orders safely in manual and YOLO modes.
+Add a global dry-run safety mode. When enabled, the normal MVP flow still runs, but broker placement is blocked globally: research, GTT approvals, tracking, EOD RCA, and learning continue as if live mode were active, while no money changes hands.
+
+### Backend Tasks
+
+- Add setting: `dry_run_mode_enabled`.
+- Use the same production tables with dry-run flags instead of separate dry-run tables:
+  - `daily_research_sessions.is_dry_run`
+  - `orders.is_dry_run`
+  - `gtt_candidates.status = dry_run_approved`
+- Add MVP RCA schemas:
+  - `rca_reports`
+  - `rca_findings`
+- Implement global dry-run behavior:
+  - normal morning research honors the global dry-run setting
+  - generated GTT candidates are marked `dry_run_approved`
+  - simulated tracked orders are created from GTT candidates
+  - do not create simulated trades from watchlist-only/transient trade candidates without grounded GTT price levels
+  - all broker order/GTT placement APIs are blocked while dry-run mode is enabled
+- Implement dry-run EOD flow:
+  - mark tracked symbols to latest market snapshots
+  - compute hypothetical PnL as if live mode had been enabled
+  - close dry-run trades/session
+  - persist EOD RCA reports/findings
+- Feed recent RCA learnings into the morning research prompt context.
+- Add optional scheduler controlled by env:
+  - `DRY_RUN_SCHEDULER_ENABLED`
+  - `DRY_RUN_MORNING_TIME_IST`
+  - `DRY_RUN_EOD_TIME_IST`
+- Add APIs:
+
+```txt
+GET  /dry-run/today
+GET  /dry-run/history
+POST /dry-run/complete-eod
+PUT  /settings/dry-run-mode
+```
+
+### Frontend Tasks
+
+- Trading Settings dry-run toggle.
+- Trading Settings global dry-run toggle only.
+- Research page uses the same normal morning research action; dry-run is not a separate per-page workflow.
+
+### Deliverables
+
+- Global dry-run mode prevents broker placement across the system.
+- Normal morning research creates tracked simulated orders when dry-run mode is enabled.
+- EOD hypothetical PnL is persisted.
+- Dry-run outcomes feed future morning research via EOD RCA learnings.
+
+---
+
+## Phase 5B — Live GTT and Order Execution
+
+### Goals
+
+Place/modify/cancel only two-leg Kite GTTs safely in manual and YOLO modes after dry-run validation; regular market/limit orders remain disabled.
 
 ### Backend Tasks
 
@@ -442,7 +509,7 @@ POST /gtt/:id/cancel
 ### Deliverables
 
 - Approved GTTs can be placed through Kite.
-- YOLO mode can place GTTs/orders only after risk approval.
+- YOLO mode can place/modify/cancel two-leg Kite GTTs only after risk approval; Wolf never places regular market/limit orders.
 - Execution events and broker responses are auditable.
 
 ---
@@ -582,7 +649,7 @@ Prepare for EC2 deployment with safe operations.
 ### Trading
 
 - `watchlist_items`
-- `trade_candidates`
+- transient trade candidates in `daily_research_sessions.rawPlan`
 - `trigger_rules`
 - `trigger_events`
 - `approval_requests`
@@ -731,3 +798,30 @@ If starting implementation now, begin with Phase 0 + the first half of Phase 1:
 8. Add `.env.example`.
 
 This gives a safe foundation before integrating Kite or automated trading workflows.
+
+
+## Product Navigation Update — Today + History Cockpit
+
+Decision: the primary day-to-day workflow should move to a `/today` cockpit. This page is the most-used operational surface and groups everything required for same-day execution into tabs:
+
+- Research: morning thesis, watchlist, candidates, sources, warnings, raw/parsed run output.
+- GTT: generated GTT candidates and app-placed broker GTTs.
+- Triggers: active rules and trigger events created/evaluated today.
+- Approvals: pending/approved/rejected approval requests for the day.
+- Orders: live/dry-run orders and order events for the day.
+- Dry-run / RCA: simulated PnL, EOD RCA reports, and learnings.
+
+History should be a separate archive at `/history`. It lists old trading days/runs with compact summaries and metrics. Opening `/history/:date` should replay the same cockpit UI as `/today`, but read-only and scoped to the selected trading date. This gives one mental model for current execution and post-trade review.
+
+Implementation notes:
+
+- Short term: derive daily bundles by `trade_date` and same-day `created_at` ranges.
+- Long term: introduce an explicit `daily_sessions` / `trading_days` table and link research sessions, GTTs, triggers, approvals, orders, dry-run output, RCA, and broker sync events via `daily_session_id`.
+- Keep existing specialist pages (`/research`, `/gtt`, `/triggers`, `/approvals`, `/orders`) as power-user/detail pages while `/today` becomes the default operational page.
+
+- Navigation refinement: `/today` now owns the operational surfaces that used to be top-level tabs: research, GTT, triggers, approvals, and orders. The sidebar is simplified to durable app areas only.
+- `/today` and `/history/:date` now start with a Summary tab, followed by underline-style tabs for Research, GTT, Triggers, Approvals, Orders, and Dry-run/RCA. The former top hero/metrics block lives inside Summary.
+
+- Refined Today navigation again per product direction: everything operational now lives under `/today/*` sub-pages (`/today/research`, `/today/gtt`, `/today/triggers`, `/today/approvals`, `/today/orders`) instead of only local in-page tabs.
+- Preserved the original functional pages/actions inside the new Today sub-pages, so running morning research, adding watchlist items, approving/rejecting/cancelling GTTs, trigger actions, approvals, and order views remain available.
+- Removed the global session/email subheading from the page header and upgraded the header to a more modern application-style title treatment.

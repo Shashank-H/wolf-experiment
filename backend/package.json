@@ -1,0 +1,29 @@
+{
+  "name": "@wolf/backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "db:check-migrations": "bun src/db/checkMigrations.ts",
+    "db:generate": "bun src/db/checkMigrations.ts && drizzle-kit generate",
+    "db:preflight": "bun src/db/preflight.ts",
+    "db:migrate": "bun src/db/checkMigrations.ts && bun src/db/preflight.ts && drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@elysiajs/cors": "latest",
+    "bullmq": "latest",
+    "drizzle-orm": "latest",
+    "elysia": "latest",
+    "ioredis": "latest",
+    "postgres": "latest"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "drizzle-kit": "latest",
+    "typescript": "latest"
+  }
+}

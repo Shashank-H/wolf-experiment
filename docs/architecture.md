@@ -4,9 +4,19 @@
 
 AI Trading Copilot is a single-user-first, multi-user-ready trading assistant for Zerodha Kite.
 
-The system performs morning market research, generates watchlists and trigger rules, monitors markets through configurable polling, optionally places GTTs/orders, manages risk, stores all trading decisions, and produces end-of-day RCA reports.
+The system performs morning market research, generates watchlists and trigger rules, monitors markets through configurable polling, manages risk, stores all trading decisions, and produces end-of-day RCA reports.
+
+## Trading Safety Invariant
+
+Wolf never places regular market/limit orders.
+
+The only broker-side trading action allowed is placing, modifying, or cancelling Kite two-leg GTT orders that include both a target and a stoploss.
+
+App triggers are internal workflow automations only. They must never directly call broker execution APIs.
 
 The MVP is designed for Indian equities only, but the architecture must support future expansion to other brokers, asset classes, and global markets.
+
+Failure and safety behavior is documented in [`docs/fallbacks.md`](./fallbacks.md). The guiding rule is that missing data, unavailable providers, or malformed model output must be explicit setup errors, runtime failures, unavailable states, or hard safety gates rather than silent fallback output.
 
 ---
 
@@ -107,15 +117,15 @@ GTT Orders
 Orders
 Positions
 Holdings
-Risk Settings
+Trading Settings
 Agent Runs
 EOD RCA
-Settings
+App Settings
 ```
 
 ### MVP Frontend Responsibilities
 
-* Show morning research summary.
+* Show morning research summary with dense details available in a right-side deep-dive drawer.
 * Show generated watchlist.
 * Show suggested trigger rules.
 * Show pending GTT approvals.
@@ -125,7 +135,8 @@ Settings
 * Display order state.
 * Display risk warnings.
 * Display RCA reports.
-* Configure API keys and preferences.
+* Configure trading/risk preferences separately from app/provider settings.
+* Surface missing provider keys or expired broker auth on the home page with a CTA to app settings.
 
 ---
 
@@ -249,15 +260,23 @@ export interface MarketDataProvider {
 ```txt
 Exa
 Finnhub
+Small-model catalyst classifier
+Optional NSE mover confirmation/fallback
 ```
+
+Morning research is **pre-market catalyst-first**. Exa and Finnhub collect broad and focused source evidence about likely movers, events, earnings, order wins, approvals, corporate actions, ratings, and sector/global cues. A small LLM classifies sources and extracts explicit NSE cash-equity symbols before the main research model runs.
+
+NSE top gainers/losers are not primary pre-market discovery. `NseMarketMoverProvider` is retained only as explicit after-open/fallback confirmation when enabled.
 
 ### Research Adapter Interface
 
 ```ts
 export interface ResearchProvider {
   search(input: ResearchSearchInput): Promise<ResearchResult[]>;
-  getTickerNews(input: TickerNewsInput): Promise<NewsItem[]>;
-  getMarketNews(input: MarketNewsInput): Promise<NewsItem[]>;
+}
+
+export interface MarketDiscoveryProvider {
+  discover(input: MarketDiscoveryQuery): Promise<MarketCandidate[]>;
 }
 ```
 
@@ -270,7 +289,9 @@ Alpha Vantage
 MarketAux
 Financial Modeling Prep
 RSS feeds
-Exchange filings
+Exchange filings/corporate announcements
+Earnings calendars
+Pre-open market data
 ```
 
 ---
@@ -409,7 +430,7 @@ In YOLO mode:
 morning research runs
 agent generates GTT/order candidates
 risk engine validates
-system can place approved-by-policy GTTs/orders automatically
+system can place approved-by-policy two-leg Kite GTTs automatically
 ```
 
 ### YOLO Mode Still Requires
@@ -440,16 +461,17 @@ Exact time configurable.
 
 ```txt
 user risk preferences
+symbol blacklist
 previous RCA learnings
-holdings
-positions
+holdings/positions for exposure context
 available capital
 watchlist history
-market news
-ticker news
+pre-market catalyst news
+company/ticker news
 sector news
 global context
-Kite quote data
+Kite quote/snapshot data for validation
+optional reactive NSE mover confirmation
 ```
 
 ### Outputs
@@ -458,9 +480,8 @@ Kite quote data
 market regime
 sector bias
 daily watchlist
-trade candidates
-trigger rules
-GTT suggestions
+transient trade ideas in session payload
+GTT suggestions only when price/risk grounded
 risk warnings
 capital allocation suggestion
 no-trade recommendation if applicable
@@ -471,26 +492,30 @@ no-trade recommendation if applicable
 ```txt
 morning_research job
     ↓
-fetch broker state
+fetch user risk/context and broker state
     ↓
-fetch research data from Exa/Finnhub
+collect pre-market catalyst sources from Exa/Finnhub
     ↓
-fetch quotes from Kite
+small model classifies catalyst type/direction/strength and extracts explicit NSE equity symbols
     ↓
-LLM generates structured daily plan
+normalize, dedupe, blacklist-filter, and rank likely-mover candidates
     ↓
-risk engine pre-validates
+enrich shortlisted candidates with Kite quote/snapshot data when available
     ↓
-store daily_research_session
+collect focused evidence for shortlisted candidates
     ↓
-create watchlist_items
+Stage 1 LLM generates thesis, sector bias, watchlist, and transient trade ideas
     ↓
-create trigger_rules
+Stage 2 LLM generates GTT drafts only for candidates with grounded price/risk context
     ↓
-create pending_gtt_candidates
+server validates schema, symbol grounding, and GTT price/risk requirements
+    ↓
+store daily_research_session, sources, watchlist_items, and pending_gtt_candidates
     ↓
 notify user
 ```
+
+Details and edge cases are documented in [`docs/implementation/pre-market-catalyst-research.md`](./implementation/pre-market-catalyst-research.md).
 
 ---
 
@@ -774,10 +799,10 @@ trade_candidate_id
 ### Responsibilities
 
 ```txt
-place orders
-place GTTs
-modify orders
-cancel orders
+place two-leg Kite GTTs with target + stoploss
+modify two-leg Kite GTTs with target + stoploss
+cancel Kite GTTs
+never place/modify/cancel regular market or limit orders
 sync order status
 sync positions
 handle rejection
@@ -808,7 +833,7 @@ duplicate prevention
 broker response logging
 rate-limit protection
 retry only when safe
-never blindly retry market orders
+never place or retry regular market/limit orders
 ```
 
 ---
@@ -923,7 +948,7 @@ model_usage_logs
 
 ```txt
 watchlist_items
-trade_candidates
+transient trade candidates in daily_research_sessions.rawPlan
 trigger_rules
 trigger_events
 approval_requests
@@ -1219,6 +1244,7 @@ GET  /auth/me
 ```txt
 GET  /settings
 PUT  /settings/trading
+PUT  /settings/research
 PUT  /settings/providers
 PUT  /settings/yolo-mode
 ```
@@ -1529,7 +1555,7 @@ Trigger engine evaluates rules
     ↓
 Risk engine validates triggered signals
     ↓
-Execution engine places Kite orders/GTTs
+Execution engine places/modifies/cancels only two-leg Kite GTTs
     ↓
 System stores every decision and event
     ↓

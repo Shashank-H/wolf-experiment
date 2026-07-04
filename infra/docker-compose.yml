@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wolf-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wolf
+      POSTGRES_PASSWORD: wolf
+      POSTGRES_DB: wolf
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wolf -d wolf"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: wolf-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # app:
+  #   image: oven/bun:1
+  #   container_name: wolf-app-placeholder
+  #   working_dir: /app
+  #   command: ["bun", "--version"]
+  #   profiles: ["app"]
+  #   volumes:
+  #     - ..:/app
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
